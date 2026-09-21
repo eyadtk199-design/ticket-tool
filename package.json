@@ -1,0 +1,16 @@
+{
+  "name": "professional-ticket-bot",
+  "version": "1.0.0",
+  "description": "Professional Discord ticket bot with configurable staff hierarchy, claims, transcripts, ratings and applications.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "discord.js": "^14.24.2",
+    "dotenv": "^17.2.2"
+  }
+}
