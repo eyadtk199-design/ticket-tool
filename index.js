@@ -1,30 +1,32 @@
-// ==================================================
-// PROFESSIONAL TICKET BOT
-// index.js
-// ==================================================
-
-require("dotenv").config();
-
-const fs = require("fs");
-const path = require("path");
-
 const {
   Client,
   GatewayIntentBits,
   Partials,
-  PermissionsBitField,
-  ChannelType,
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ChannelType,
+  PermissionFlagsBits,
+  SlashCommandBuilder,
   ModalBuilder,
   TextInputBuilder,
-  TextInputStyle,
-  SlashCommandBuilder,
-  REST,
-  Routes
+  TextInputStyle
 } = require("discord.js");
+
+const fs = require("fs");
+const path = require("path");
+
+// ==================================================
+// TOKEN
+// ==================================================
+
+const TOKEN = process.env.TOKEN;
+
+if (!TOKEN) {
+  console.error("❌ TOKEN غير موجود في Environment Variables");
+  process.exit(1);
+}
 
 // ==================================================
 // CLIENT
@@ -35,137 +37,59 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.DirectMessages
   ],
 
   partials: [
-    Partials.Channel,
-    Partials.Message,
-    Partials.User,
-    Partials.GuildMember
+    Partials.Channel
   ]
 });
-
-// ==================================================
-// ENV
-// ==================================================
-
-const TOKEN = process.env.DISCORD_TOKEN;
-const CLIENT_ID = process.env.CLIENT_ID;
-
-if (!TOKEN || !CLIENT_ID) {
-  console.error("❌ Missing DISCORD_TOKEN or CLIENT_ID environment variable.");
-  process.exit(1);
-}
-
-// ==================================================
-// FILES
-// ==================================================
-
-const DATA_FILE = path.join(__dirname, "data.json");
-
-const TRANSCRIPT_DIR = path.join(__dirname, "transcripts");
-
-if (!fs.existsSync(TRANSCRIPT_DIR)) {
-  fs.mkdirSync(TRANSCRIPT_DIR, { recursive: true });
-}
-
-// ==================================================
-// DEFAULT PANEL
-// ==================================================
-
-const DEFAULT_PANEL = {
-  title: "🎫 الدعم الفني",
-  description:
-    "اضغط على الزر بالأسفل لفتح تذكرة والتواصل مع فريق الدعم.",
-  buttonText: "فتح تذكرة",
-  emoji: "🎫",
-  color: "#5865F2",
-  footer: "نظام التذاكر",
-  thumbnail: "",
-  image: ""
-};
-
-// ==================================================
-// DEFAULT SETTINGS
-// ==================================================
-
-const DEFAULTS = {
-  juniorRole: null,
-  middleRole: null,
-  seniorRole: null,
-  ownerRole: null,
-
-  ticketCategory: null,
-
-  logsChannel: null,
-  archiveChannel: null,
-  applicationChannel: null,
-
-  panelChannel: null,
-  panelMessage: null,
-
-  mentionRole: null,
-
-  maxOpenTickets: 1,
-
-  autoCloseMinutes: 0,
-
-  requireRating: true,
-
-  panel: DEFAULT_PANEL,
-
-  application: {
-    title: "📋 التقديم",
-    description: "اضغط على الزر بالأسفل لفتح نموذج التقديم.",
-    buttonText: "📝 تقديم",
-    emoji: "📝"
-  },
-
-  staff: {}
-};
 
 // ==================================================
 // DATABASE
 // ==================================================
 
+const DB_FILE = path.join(
+  __dirname,
+  "database.json"
+);
+
+let db = {
+  guilds: {},
+  tickets: {},
+  applications: {}
+};
+
+// ==================================================
+// LOAD DATABASE
+// ==================================================
+
 function loadDB() {
   try {
-    if (!fs.existsSync(DATA_FILE)) {
-      const initialData = {
-        guilds: {},
-        tickets: {},
-        applications: {}
-      };
-
-      fs.writeFileSync(
-        DATA_FILE,
-        JSON.stringify(initialData, null, 2),
-        "utf8"
-      );
+    if (!fs.existsSync(DB_FILE)) {
+      saveDB();
+      return;
     }
 
-    const data = JSON.parse(
-      fs.readFileSync(DATA_FILE, "utf8")
+    const data = fs.readFileSync(
+      DB_FILE,
+      "utf8"
     );
 
-    data.guilds ||= {};
-    data.tickets ||= {};
-    data.applications ||= {};
+    db = JSON.parse(data);
 
-    return data;
+    db.guilds ||= {};
+    db.tickets ||= {};
+    db.applications ||= {};
+
   } catch (error) {
-    console.error("❌ Database load error:", error);
-
-    return {
-      guilds: {},
-      tickets: {},
-      applications: {}
-    };
+    console.error(
+      "❌ Database load error:",
+      error
+    );
   }
 }
-
-let db = loadDB();
 
 // ==================================================
 // SAVE DATABASE
@@ -173,71 +97,135 @@ let db = loadDB();
 
 function saveDB() {
   try {
-    const tmp = DATA_FILE + ".tmp";
-
     fs.writeFileSync(
-      tmp,
-      JSON.stringify(db, null, 2),
-      "utf8"
+      DB_FILE,
+      JSON.stringify(
+        db,
+        null,
+        2
+      )
     );
-
-    fs.renameSync(tmp, DATA_FILE);
   } catch (error) {
-    console.error("❌ Database save error:", error);
+    console.error(
+      "❌ Database save error:",
+      error
+    );
   }
 }
 
 // ==================================================
-// GET GUILD SETTINGS
+// LOAD
+// ==================================================
+
+loadDB();
+
+// ==================================================
+// DEFAULT PANEL
+// ==================================================
+
+const DEFAULT_PANEL = {
+  title: "🎫 نظام التذاكر",
+
+  description:
+    "اضغط على الزر بالأسفل لفتح تذكرة.",
+
+  buttonText:
+    "فتح تذكرة",
+
+  emoji:
+    "🎫",
+
+  color:
+    "#5865F2",
+
+  footer:
+    "نظام التذاكر",
+
+  thumbnail:
+    null,
+
+  image:
+    null
+};
+
+// ==================================================
+// DEFAULT GUILD
 // ==================================================
 
 function getGuild(guildId) {
+
   if (!db.guilds[guildId]) {
-    db.guilds[guildId] = JSON.parse(
-      JSON.stringify(DEFAULTS)
-    );
+
+    db.guilds[guildId] = {
+
+      juniorRole: null,
+
+      middleRole: null,
+
+      seniorRole: null,
+
+      ownerRole: null,
+
+      category: null,
+
+      logsChannel: null,
+
+      archiveChannel: null,
+
+      applicationChannel: null,
+
+      mentionRole: null,
+
+      panelChannel: null,
+
+      panelMessage: null,
+
+      maxTickets: 1,
+
+      requireRating: false,
+
+      panel: {
+        ...DEFAULT_PANEL
+      },
+
+      staff: {}
+    };
 
     saveDB();
   }
 
-  const guild = db.guilds[guildId];
-
-  guild.panel ||= JSON.parse(
-    JSON.stringify(DEFAULT_PANEL)
-  );
-
-  guild.application ||= {
-    title: "📋 التقديم",
-    description:
-      "اضغط على الزر بالأسفل لفتح نموذج التقديم.",
-    buttonText: "📝 تقديم",
-    emoji: "📝"
-  };
-
-  guild.staff ||= {};
-
-  guild.maxOpenTickets ||= 1;
-
-  if (typeof guild.requireRating !== "boolean") {
-    guild.requireRating = true;
-  }
-
-  return guild;
+  return db.guilds[guildId];
 }
 
 // ==================================================
-// PERMISSIONS
+// TEXT SAFETY
 // ==================================================
 
-function isServerManager(member) {
-  if (!member) return false;
+function safeText(
+  value,
+  fallback = ""
+) {
+  if (!value) {
+    return fallback;
+  }
 
-  return (
-    member.permissions.has(
-      PermissionsBitField.Flags.ManageGuild
-    ) ||
-    member.permissions.has(
-      PermissionsBitField.Flags.Administrator
+  return String(value)
+    .slice(0, 1024);
+}
+
+// ==================================================
+// STARS
+// ==================================================
+
+function stars(number) {
+
+  return "⭐".repeat(
+    Math.max(
+      0,
+      Math.min(
+        5,
+        Number(number) || 0
+      )
     )
   );
 }
@@ -246,33 +234,47 @@ function isServerManager(member) {
 // STAFF LEVEL
 // ==================================================
 
-function staffLevel(member, settings) {
-  if (!member) return 0;
+function staffLevel(
+  member,
+  settings
+) {
+
+  if (!member) {
+    return 0;
+  }
 
   if (
     settings.ownerRole &&
-    member.roles.cache.has(settings.ownerRole)
+    member.roles.cache.has(
+      settings.ownerRole
+    )
   ) {
     return 4;
   }
 
   if (
     settings.seniorRole &&
-    member.roles.cache.has(settings.seniorRole)
+    member.roles.cache.has(
+      settings.seniorRole
+    )
   ) {
     return 3;
   }
 
   if (
     settings.middleRole &&
-    member.roles.cache.has(settings.middleRole)
+    member.roles.cache.has(
+      settings.middleRole
+    )
   ) {
     return 2;
   }
 
   if (
     settings.juniorRole &&
-    member.roles.cache.has(settings.juniorRole)
+    member.roles.cache.has(
+      settings.juniorRole
+    )
   ) {
     return 1;
   }
@@ -285,6 +287,7 @@ function staffLevel(member, settings) {
 // ==================================================
 
 function levelName(level) {
+
   return [
     "عضو",
     "الاستف الصغرى",
@@ -295,11 +298,34 @@ function levelName(level) {
 }
 
 // ==================================================
-// TICKET PERMISSIONS
+// SERVER MANAGER
 // ==================================================
 
-function canManageTicket(member, ticket, settings) {
-  const level = staffLevel(member, settings);
+function isServerManager(member) {
+
+  return Boolean(
+    member &&
+    member.permissions.has(
+      PermissionFlagsBits.ManageGuild
+    )
+  );
+}
+
+// ==================================================
+// TICKET PERMISSION
+// ==================================================
+
+function canManageTicket(
+  member,
+  ticket,
+  settings
+) {
+
+  const level =
+    staffLevel(
+      member,
+      settings
+    );
 
   if (level < 1) {
     return false;
@@ -309,7 +335,10 @@ function canManageTicket(member, ticket, settings) {
     return true;
   }
 
-  if (ticket.claimedBy === member.id) {
+  if (
+    ticket.claimedBy ===
+    member.id
+  ) {
     return true;
   }
 
@@ -320,24 +349,44 @@ function canManageTicket(member, ticket, settings) {
 // CAN CLAIM
 // ==================================================
 
-function canClaim(member, settings) {
-  return staffLevel(member, settings) >= 1;
+function canClaim(
+  member,
+  settings
+) {
+
+  return (
+    staffLevel(
+      member,
+      settings
+    ) >= 1
+  );
 }
 
 // ==================================================
 // OPEN TICKETS
 // ==================================================
 
-function getOpenTicketsForUser(guildId, userId) {
-  return Object.values(db.tickets).filter(
-    ticket =>
-      ticket.guildId === guildId &&
-      ticket.userId === userId &&
-      [
-        "open",
-        "locked",
-        "closed_waiting_rating"
-      ].includes(ticket.status)
+function getOpenTicketsForUser(
+  guildId,
+  userId
+) {
+
+  return Object.values(
+    db.tickets
+  ).filter(ticket =>
+
+    ticket.guildId ===
+      guildId &&
+
+    ticket.userId ===
+      userId &&
+
+    [
+      "open",
+      "locked"
+    ].includes(
+      ticket.status
+    )
   );
 }
 
@@ -351,7 +400,9 @@ function addStat(
   key,
   amount = 1
 ) {
-  const settings = getGuild(guildId);
+
+  const settings =
+    getGuild(guildId);
 
   settings.staff[userId] ||= {
     claimed: 0,
@@ -361,7 +412,10 @@ function addStat(
   };
 
   settings.staff[userId][key] =
-    (settings.staff[userId][key] || 0) + amount;
+    (
+      settings.staff[userId][key] ||
+      0
+    ) + amount;
 
   saveDB();
 }
@@ -370,79 +424,138 @@ function addStat(
 // AVERAGE RATING
 // ==================================================
 
-function averageRating(guildId, userId) {
-  const settings = getGuild(guildId);
+function averageRating(
+  guildId,
+  userId
+) {
 
-  const staff = settings.staff[userId];
+  const settings =
+    getGuild(guildId);
 
-  if (!staff || !staff.ratings) {
+  const staff =
+    settings.staff[userId];
+
+  if (
+    !staff ||
+    !staff.ratings
+  ) {
     return "لا يوجد";
   }
 
   return (
-    staff.ratingSum / staff.ratings
+    staff.ratingSum /
+    staff.ratings
   ).toFixed(2);
 }
 
 // ==================================================
-// STARS
+// STARTUP MESSAGE
 // ==================================================
 
-function stars(number) {
-  return "⭐".repeat(
-    Math.max(
-      0,
-      Math.min(5, Number(number) || 0)
-    )
-  );
+console.log(
+  "=========================================="
+);
+
+console.log(
+  "🎫 KRX Ticket System"
+);
+
+console.log(
+  "📦 Database loaded"
+);
+
+console.log(
+  "=========================================="
+);
+// ==================================================
+// LOG SYSTEM
+// ==================================================
+
+async function sendLog(
+  guild,
+  settings,
+  embed
+) {
+  try {
+
+    if (!settings.logsChannel) {
+      return;
+    }
+
+    const channel =
+      guild.channels.cache.get(
+        settings.logsChannel
+      );
+
+    if (!channel) {
+      return;
+    }
+
+    await channel.send({
+      embeds: [embed]
+    });
+
+  } catch (error) {
+
+    console.error(
+      "❌ Log error:",
+      error
+    );
+  }
 }
 
 // ==================================================
-// SAFE TEXT
+// LOG TIME
 // ==================================================
 
-function safeText(
-  value,
-  fallback = ""
-) {
-  if (!value) {
-    return fallback;
-  }
+function logTime() {
 
-  return String(value).slice(0, 1024);
+  return `<t:${Math.floor(
+    Date.now() / 1000
+  )}:F>`;
 }
 
 // ==================================================
 // PANEL EMBED
 // ==================================================
 
-function panelEmbed(settings) {
-  const panel = settings.panel || DEFAULT_PANEL;
+function panelEmbed(
+  settings
+) {
 
-  const embed = new EmbedBuilder()
-    .setTitle(
-      panel.title || DEFAULT_PANEL.title
-    )
-    .setDescription(
-      panel.description ||
-      DEFAULT_PANEL.description
-    )
-    .setColor(
-      panel.color ||
-      DEFAULT_PANEL.color
-    )
-    .setFooter({
-      text:
-        panel.footer ||
-        DEFAULT_PANEL.footer
-    });
+  const panel =
+    settings.panel || DEFAULT_PANEL;
+
+  const embed =
+    new EmbedBuilder()
+      .setTitle(
+        panel.title ||
+        DEFAULT_PANEL.title
+      )
+      .setDescription(
+        panel.description ||
+        DEFAULT_PANEL.description
+      )
+      .setColor(
+        panel.color ||
+        DEFAULT_PANEL.color
+      )
+      .setFooter({
+        text:
+          panel.footer ||
+          DEFAULT_PANEL.footer
+      });
 
   if (panel.thumbnail) {
-    embed.setThumbnail(panel.thumbnail);
+    embed.setThumbnail(
+      panel.thumbnail
+    );
   }
 
   if (panel.image) {
-    embed.setImage(panel.image);
+    embed.setImage(
+      panel.image
+    );
   }
 
   return embed;
@@ -452,20 +565,33 @@ function panelEmbed(settings) {
 // PANEL BUTTON
 // ==================================================
 
-function panelRow(settings) {
-  const panel = settings.panel || DEFAULT_PANEL;
+function panelRow(
+  settings
+) {
 
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("ticket_open")
-      .setLabel(
-        panel.buttonText || "فتح تذكرة"
-      )
-      .setEmoji(
-        panel.emoji || "🎫"
-      )
-      .setStyle(ButtonStyle.Primary)
-  );
+  const panel =
+    settings.panel || DEFAULT_PANEL;
+
+  return new ActionRowBuilder()
+    .addComponents(
+
+      new ButtonBuilder()
+        .setCustomId(
+          "ticket_open"
+        )
+        .setLabel(
+          panel.buttonText ||
+          "فتح تذكرة"
+        )
+        .setEmoji(
+          panel.emoji ||
+          "🎫"
+        )
+        .setStyle(
+          ButtonStyle.Primary
+        )
+
+    );
 }
 
 // ==================================================
@@ -473,31 +599,67 @@ function panelRow(settings) {
 // ==================================================
 
 function ticketRow() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("ticket_claim")
-      .setLabel("استلام")
-      .setEmoji("📥")
-      .setStyle(ButtonStyle.Success),
 
-    new ButtonBuilder()
-      .setCustomId("ticket_unclaim")
-      .setLabel("إلغاء الاستلام")
-      .setEmoji("↩️")
-      .setStyle(ButtonStyle.Secondary),
+  return new ActionRowBuilder()
+    .addComponents(
 
-    new ButtonBuilder()
-      .setCustomId("ticket_lock")
-      .setLabel("قفل")
-      .setEmoji("🔒")
-      .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(
+          "ticket_claim"
+        )
+        .setLabel(
+          "استلام"
+        )
+        .setEmoji(
+          "🙋"
+        )
+        .setStyle(
+          ButtonStyle.Success
+        ),
 
-    new ButtonBuilder()
-      .setCustomId("ticket_close")
-      .setLabel("إغلاق")
-      .setEmoji("❌")
-      .setStyle(ButtonStyle.Danger)
-  );
+      new ButtonBuilder()
+        .setCustomId(
+          "ticket_unclaim"
+        )
+        .setLabel(
+          "إلغاء الاستلام"
+        )
+        .setEmoji(
+          "↩️"
+        )
+        .setStyle(
+          ButtonStyle.Secondary
+        ),
+
+      new ButtonBuilder()
+        .setCustomId(
+          "ticket_lock"
+        )
+        .setLabel(
+          "قفل"
+        )
+        .setEmoji(
+          "🔒"
+        )
+        .setStyle(
+          ButtonStyle.Secondary
+        ),
+
+      new ButtonBuilder()
+        .setCustomId(
+          "ticket_close"
+        )
+        .setLabel(
+          "إغلاق"
+        )
+        .setEmoji(
+          "🔴"
+        )
+        .setStyle(
+          ButtonStyle.Danger
+        )
+
+    );
 }
 
 // ==================================================
@@ -506,194 +668,2283 @@ function ticketRow() {
 
 function ticketEmbed(
   ticket,
+  guild
+) {
+
+  const embed =
+    new EmbedBuilder()
+      .setTitle(
+        "🎫 تذكرة جديدة"
+      )
+      .setColor(
+        "#5865F2"
+      )
+      .addFields(
+
+        {
+          name:
+            "👤 صاحب التذكرة",
+          value:
+            `<@${ticket.userId}>`,
+          inline: true
+        },
+
+        {
+          name:
+            "🆔 ID",
+          value:
+            ticket.userId,
+          inline: true
+        },
+
+        {
+          name:
+            "📅 وقت الفتح",
+          value:
+            ticket.createdAt
+              ? `<t:${Math.floor(
+                  ticket.createdAt / 1000
+                )}:F>`
+              : logTime(),
+          inline: true
+        },
+
+        {
+          name:
+            "📌 الحالة",
+          value:
+            ticket.status ||
+            "open",
+          inline: true
+        },
+
+        {
+          name:
+            "🙋 المستلم",
+          value:
+            ticket.claimedBy
+              ? `<@${ticket.claimedBy}>`
+              : "لم يتم الاستلام",
+          inline: true
+        }
+
+      )
+      .setTimestamp();
+
+  if (guild) {
+    embed.setFooter({
+      text:
+        guild.name
+    });
+  }
+
+  return embed;
+}
+
+// ==================================================
+// SET TICKET PERMISSIONS
+// ==================================================
+
+async function setTicketPermissions(
+  channel,
+  ticket,
   settings
 ) {
-  const claim = ticket.claimedBy
-    ? `<@${ticket.claimedBy}>`
-    : "غير مستلمة";
 
-  let status = "🟢 مفتوحة";
+  try {
+
+    const everyone =
+      channel.guild.roles.everyone;
+
+    await channel.permissionOverwrites.edit(
+      everyone,
+      {
+        ViewChannel: false
+      }
+    );
+
+    // صاحب التذكرة
+    await channel.permissionOverwrites.edit(
+      ticket.userId,
+      {
+        ViewChannel: true,
+        SendMessages:
+          !ticket.locked,
+        ReadMessageHistory: true
+      }
+    );
+
+    // الإدارة
+    const roleIds = [
+      settings.juniorRole,
+      settings.middleRole,
+      settings.seniorRole,
+      settings.ownerRole
+    ].filter(Boolean);
+
+    for (
+      const roleId of roleIds
+    ) {
+
+      await channel.permissionOverwrites.edit(
+        roleId,
+        {
+          ViewChannel: true,
+          ReadMessageHistory: true,
+          SendMessages:
+            !ticket.locked
+        }
+      );
+    }
+
+    // المستلم
+    if (ticket.claimedBy) {
+
+      await channel.permissionOverwrites.edit(
+        ticket.claimedBy,
+        {
+          ViewChannel: true,
+          ReadMessageHistory: true,
+          SendMessages:
+            !ticket.locked
+        }
+      );
+    }
+
+  } catch (error) {
+
+    console.error(
+      "❌ Permission error:",
+      error
+    );
+  }
+}
+
+// ==================================================
+// CREATE TICKET OBJECT
+// ==================================================
+
+function createTicketData(
+  guildId,
+  userId
+) {
+
+  return {
+
+    guildId,
+
+    userId,
+
+    channelId: null,
+
+    claimedBy: null,
+
+    status: "open",
+
+    locked: false,
+
+    rated: false,
+
+    rating: null,
+
+    ratingSum: 0,
+
+    createdAt:
+      Date.now(),
+
+    claimedAt: null,
+
+    closedAt: null,
+
+    deletedAt: null
+
+  };
+}
+
+// ==================================================
+// OPEN TICKET LOG
+// ==================================================
+
+async function logTicketOpened(
+  guild,
+  settings,
+  ticket,
+  channel,
+  user
+) {
+
+  await sendLog(
+    guild,
+    settings,
+
+    new EmbedBuilder()
+      .setTitle(
+        "🎫 Ticket Opened"
+      )
+      .setColor(
+        "#57F287"
+      )
+      .addFields(
+
+        {
+          name:
+            "👤 صاحب التذكرة",
+          value:
+            `<@${ticket.userId}>`,
+          inline: true
+        },
+
+        {
+          name:
+            "🛠️ فتح بواسطة",
+          value:
+            `${user}`,
+          inline: true
+        },
+
+        {
+          name:
+            "🎫 التذكرة",
+          value:
+            `<#${channel.id}>`,
+          inline: true
+        },
+
+        {
+          name:
+            "🆔 Channel ID",
+          value:
+            channel.id,
+          inline: true
+        },
+
+        {
+          name:
+            "🆔 User ID",
+          value:
+            ticket.userId,
+          inline: true
+        },
+
+        {
+          name:
+            "🕐 وقت الفتح",
+          value:
+            logTime(),
+          inline: true
+        }
+
+      )
+      .setTimestamp()
+  );
+}
+
+// ==================================================
+// CLAIM LOG
+// ==================================================
+
+async function logTicketClaimed(
+  guild,
+  settings,
+  ticket,
+  channel,
+  member
+) {
+
+  await sendLog(
+    guild,
+    settings,
+
+    new EmbedBuilder()
+      .setTitle(
+        "🙋 Ticket Claimed"
+      )
+      .setColor(
+        "#57F287"
+      )
+      .addFields(
+
+        {
+          name:
+            "👤 صاحب التذكرة",
+          value:
+            `<@${ticket.userId}>`,
+          inline: true
+        },
+
+        {
+          name:
+            "🛡️ المستلم",
+          value:
+            `${member}`,
+          inline: true
+        },
+
+        {
+          name:
+            "🎫 التذكرة",
+          value:
+            `<#${channel.id}>`,
+          inline: true
+        },
+
+        {
+          name:
+            "🕐 وقت الاستلام",
+          value:
+            logTime(),
+          inline: true
+        }
+
+      )
+      .setTimestamp()
+  );
+}
+
+// ==================================================
+// UNCLAIM LOG
+// ==================================================
+
+async function logTicketUnclaimed(
+  guild,
+  settings,
+  ticket,
+  channel,
+  member,
+  oldClaimer
+) {
+
+  await sendLog(
+    guild,
+    settings,
+
+    new EmbedBuilder()
+      .setTitle(
+        "↩️ Ticket Unclaimed"
+      )
+      .setColor(
+        "#FEE75C"
+      )
+      .addFields(
+
+        {
+          name:
+            "👤 صاحب التذكرة",
+          value:
+            `<@${ticket.userId}>`,
+          inline: true
+        },
+
+        {
+          name:
+            "🛡️ قام بإلغاء الاستلام",
+          value:
+            `${member}`,
+          inline: true
+        },
+
+        {
+          name:
+            "🙋 المستلم السابق",
+          value:
+            oldClaimer
+              ? `<@${oldClaimer}>`
+              : "غير معروف",
+          inline: true
+        },
+
+        {
+          name:
+            "🎫 التذكرة",
+          value:
+            `<#${channel.id}>`,
+          inline: true
+        },
+
+        {
+          name:
+            "🕐 الوقت",
+          value:
+            logTime(),
+          inline: true
+        }
+
+      )
+      .setTimestamp()
+  );
+}
+
+// ==================================================
+// LOCK / UNLOCK LOG
+// ==================================================
+
+async function logTicketLock(
+  guild,
+  settings,
+  ticket,
+  channel,
+  member,
+  locked
+) {
+
+  await sendLog(
+    guild,
+    settings,
+
+    new EmbedBuilder()
+      .setTitle(
+        locked
+          ? "🔒 Ticket Locked"
+          : "🔓 Ticket Unlocked"
+      )
+      .setColor(
+        locked
+          ? "#ED4245"
+          : "#57F287"
+      )
+      .addFields(
+
+        {
+          name:
+            "👤 صاحب التذكرة",
+          value:
+            `<@${ticket.userId}>`,
+          inline: true
+        },
+
+        {
+          name:
+            "🛡️ بواسطة",
+          value:
+            `${member}`,
+          inline: true
+        },
+
+        {
+          name:
+            "🎫 التذكرة",
+          value:
+            `<#${channel.id}>`,
+          inline: true
+        },
+
+        {
+          name:
+            "📌 الحالة",
+          value:
+            locked
+              ? "مقفلة 🔒"
+              : "مفتوحة 🔓",
+          inline: true
+        },
+
+        {
+          name:
+            "🕐 الوقت",
+          value:
+            logTime(),
+          inline: true
+        }
+
+      )
+      .setTimestamp()
+  );
+}
+
+// ==================================================
+// CLOSE LOG
+// ==================================================
+
+async function logTicketClosed(
+  guild,
+  settings,
+  ticket,
+  channel,
+  member
+) {
+
+  await sendLog(
+    guild,
+    settings,
+
+    new EmbedBuilder()
+      .setTitle(
+        "🔴 Ticket Closed"
+      )
+      .setColor(
+        "#ED4245"
+      )
+      .addFields(
+
+        {
+          name:
+            "👤 صاحب التذكرة",
+          value:
+            `<@${ticket.userId}>`,
+          inline: true
+        },
+
+        {
+          name:
+            "🛡️ قام بالإغلاق",
+          value:
+            `${member}`,
+          inline: true
+        },
+
+        {
+          name:
+            "🎫 التذكرة",
+          value:
+            `<#${channel.id}>`,
+          inline: true
+        },
+
+        {
+          name:
+            "🙋 المستلم",
+          value:
+            ticket.claimedBy
+              ? `<@${ticket.claimedBy}>`
+              : "لم يتم الاستلام",
+          inline: true
+        },
+
+        {
+          name:
+            "⭐ التقييم",
+          value:
+            "اختياري",
+          inline: true
+        },
+
+        {
+          name:
+            "🕐 وقت الإغلاق",
+          value:
+            logTime(),
+          inline: true
+        }
+
+      )
+      .setTimestamp()
+  );
+}
+
+// ==================================================
+// DELETE LOG
+// ==================================================
+
+async function logTicketDeleted(
+  guild,
+  settings,
+  ticket,
+  channel,
+  member
+) {
+
+  await sendLog(
+    guild,
+    settings,
+
+    new EmbedBuilder()
+      .setTitle(
+        "🗑️ Ticket Deleted"
+      )
+      .setColor(
+        "#ED4245"
+      )
+      .addFields(
+
+        {
+          name:
+            "👤 صاحب التذكرة",
+          value:
+            `<@${ticket.userId}>`,
+          inline: true
+        },
+
+        {
+          name:
+            "🗑️ قام بالحذف",
+          value:
+            `${member}`,
+          inline: true
+        },
+
+        {
+          name:
+            "🎫 التذكرة",
+          value:
+            `<#${channel.id}>`,
+          inline: true
+        },
+
+        {
+          name:
+            "🆔 Channel ID",
+          value:
+            channel.id,
+          inline: true
+        },
+
+        {
+          name:
+            "🙋 المستلم",
+          value:
+            ticket.claimedBy
+              ? `<@${ticket.claimedBy}>`
+              : "لم يتم الاستلام",
+          inline: true
+        },
+
+        {
+          name:
+            "⭐ التقييم",
+          value:
+            ticket.rated
+              ? `${stars(ticket.rating)} (${ticket.rating}/5)`
+              : "لم يتم التقييم",
+          inline: true
+        },
+
+        {
+          name:
+            "🕐 وقت الحذف",
+          value:
+            logTime(),
+          inline: true
+        }
+
+      )
+      .setTimestamp()
+  );
+}
+
+// ==================================================
+// RATING LOG
+// ==================================================
+
+async function logTicketRated(
+  guild,
+  settings,
+  ticket,
+  rating,
+  user
+) {
+
+  await sendLog(
+    guild,
+    settings,
+
+    new EmbedBuilder()
+      .setTitle(
+        "⭐ Ticket Rated"
+      )
+      .setColor(
+        "#FEE75C"
+      )
+      .addFields(
+
+        {
+          name:
+            "👤 صاحب التذكرة",
+          value:
+            `<@${ticket.userId}>`,
+          inline: true
+        },
+
+        {
+          name:
+            "⭐ التقييم",
+          value:
+            `${stars(rating)} (${rating}/5)`,
+          inline: true
+        },
+
+        {
+          name:
+            "🙋 قام بالتقييم",
+          value:
+            `${user}`,
+          inline: true
+        },
+
+        {
+          name:
+            "🛡️ الموظف",
+          value:
+            ticket.claimedBy
+              ? `<@${ticket.claimedBy}>`
+              : "لم يتم الاستلام",
+          inline: true
+        },
+
+        {
+          name:
+            "🆔 Ticket ID",
+          value:
+            ticket.channelId ||
+            "غير معروف",
+          inline: true
+        },
+
+        {
+          name:
+            "🕐 وقت التقييم",
+          value:
+            logTime(),
+          inline: true
+        }
+
+      )
+      .setTimestamp()
+  );
+  }
+// ==================================================
+// CREATE TICKET CHANNEL
+// ==================================================
+
+async function createTicket(
+  interaction,
+  settings
+) {
+
+  const guild =
+    interaction.guild;
+
+  const user =
+    interaction.user;
+
+  // ----------------------------------------------
+  // التأكد من الحد الأقصى للتذاكر
+  // ----------------------------------------------
+
+  const openTickets =
+    getOpenTicketsForUser(
+      guild.id,
+      user.id
+    );
+
+  const maxTickets =
+    Number(
+      settings.maxTickets || 1
+    );
 
   if (
-    ticket.status === "locked"
+    openTickets.length >=
+    maxTickets
   ) {
-    status = "🔒 مقفلة";
+
+    return interaction.reply({
+      content:
+        `❌ لديك بالفعل ${openTickets.length} تذكرة مفتوحة.\nالحد الأقصى: ${maxTickets}`,
+      ephemeral: true
+    });
+
+  }
+
+  // ----------------------------------------------
+  // إنشاء بيانات التذكرة
+  // ----------------------------------------------
+
+  const ticket =
+    createTicketData(
+      guild.id,
+      user.id
+    );
+
+  // ----------------------------------------------
+  // اسم التذكرة
+  // ----------------------------------------------
+
+  const ticketNumber =
+    Object.keys(db.tickets)
+      .filter(id =>
+        db.tickets[id]?.guildId ===
+        guild.id
+      ).length + 1;
+
+  const channelName =
+    `ticket-${ticketNumber}`;
+
+  // ----------------------------------------------
+  // صلاحيات الروم
+  // ----------------------------------------------
+
+  const overwrites = [
+
+    {
+      id:
+        guild.roles.everyone.id,
+
+      deny: [
+        PermissionFlagsBits.ViewChannel
+      ]
+    },
+
+    {
+      id:
+        user.id,
+
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory
+      ]
+    }
+
+  ];
+
+  // ----------------------------------------------
+  // إضافة رتب الإدارة
+  // ----------------------------------------------
+
+  const staffRoles = [
+
+    settings.juniorRole,
+    settings.middleRole,
+    settings.seniorRole,
+    settings.ownerRole
+
+  ].filter(Boolean);
+
+  for (
+    const roleId of staffRoles
+  ) {
+
+    overwrites.push({
+
+      id: roleId,
+
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory
+      ]
+
+    });
+
+  }
+
+  // ----------------------------------------------
+  // إنشاء الروم
+  // ----------------------------------------------
+
+  const channel =
+    await guild.channels.create({
+
+      name:
+        channelName,
+
+      type:
+        ChannelType.GuildText,
+
+      parent:
+        settings.category || null,
+
+      permissionOverwrites:
+        overwrites
+
+    });
+
+  // ----------------------------------------------
+  // حفظ Channel ID
+  // ----------------------------------------------
+
+  ticket.channelId =
+    channel.id;
+
+  db.tickets[channel.id] =
+    ticket;
+
+  saveDB();
+
+  // ----------------------------------------------
+  // Embed التذكرة
+  // ----------------------------------------------
+
+  const embed =
+    ticketEmbed(
+      ticket,
+      guild
+    );
+
+  // ----------------------------------------------
+  // رسالة الترحيب
+  // ----------------------------------------------
+
+  await channel.send({
+
+    content:
+      `<@${user.id}>`,
+
+    embeds: [
+      embed
+    ],
+
+    components: [
+      ticketRow()
+    ]
+
+  });
+
+  // ----------------------------------------------
+  // Log فتح التذكرة
+  // ----------------------------------------------
+
+  await logTicketOpened(
+    guild,
+    settings,
+    ticket,
+    channel,
+    user
+  );
+
+  // ----------------------------------------------
+  // الرد
+  // ----------------------------------------------
+
+  await interaction.reply({
+
+    content:
+      `✅ تم إنشاء تذكرتك: ${channel}`,
+
+    ephemeral: true
+
+  });
+
+  return channel;
+}
+
+// ==================================================
+// CLAIM TICKET
+// ==================================================
+
+async function claimTicket(
+  interaction,
+  ticket,
+  settings
+) {
+
+  const member =
+    interaction.member;
+
+  // ----------------------------------------------
+  // الصلاحية
+  // ----------------------------------------------
+
+  if (
+    !canClaim(
+      member,
+      settings
+    )
+  ) {
+
+    return interaction.reply({
+
+      content:
+        "❌ ليس لديك صلاحية استلام التذاكر.",
+
+      ephemeral: true
+
+    });
+
+  }
+
+  // ----------------------------------------------
+  // التأكد من حالة التذكرة
+  // ----------------------------------------------
+
+  if (
+    ticket.status ===
+    "deleted"
+  ) {
+
+    return interaction.reply({
+
+      content:
+        "❌ هذه التذكرة محذوفة.",
+
+      ephemeral: true
+
+    });
+
   }
 
   if (
     ticket.status ===
     "closed_waiting_rating"
   ) {
-    status = "⭐ بانتظار التقييم";
+
+    return interaction.reply({
+
+      content:
+        "❌ هذه التذكرة مغلقة.",
+
+      ephemeral: true
+
+    });
+
   }
 
-  return new EmbedBuilder()
-    .setTitle("🎫 تذكرة دعم")
-    .setDescription(
-      `👤 صاحب التذكرة: <@${ticket.userId}>\n` +
-      `📥 المستلم: ${claim}\n` +
-      `📌 الحالة: ${status}`
-    )
-    .setColor(
-      ticket.status === "locked"
-        ? "#ED4245"
-        : "#5865F2"
-    )
-    .setFooter({
-      text:
-        settings.panel.footer ||
-        "نظام التذاكر"
+  // ----------------------------------------------
+  // إذا كانت مستلمة
+  // ----------------------------------------------
+
+  if (ticket.claimedBy) {
+
+    if (
+      ticket.claimedBy ===
+      member.id
+    ) {
+
+      return interaction.reply({
+
+        content:
+          "⚠️ أنت مستلم هذه التذكرة بالفعل.",
+
+        ephemeral: true
+
+      });
+
+    }
+
+    return interaction.reply({
+
+      content:
+        `❌ التذكرة مستلمة بالفعل بواسطة <@${ticket.claimedBy}>.`,
+
+      ephemeral: true
+
     });
+
+  }
+
+  // ----------------------------------------------
+  // الاستلام
+  // ----------------------------------------------
+
+  ticket.claimedBy =
+    member.id;
+
+  ticket.claimedAt =
+    Date.now();
+
+  saveDB();
+
+  // ----------------------------------------------
+  // تعديل الصلاحيات
+  // ----------------------------------------------
+
+  await setTicketPermissions(
+    interaction.channel,
+    ticket,
+    settings
+  );
+
+  // ----------------------------------------------
+  // الإحصائيات
+  // ----------------------------------------------
+
+  addStat(
+    interaction.guild.id,
+    member.id,
+    "claimed"
+  );
+
+  // ----------------------------------------------
+  // Log
+  // ----------------------------------------------
+
+  await logTicketClaimed(
+    interaction.guild,
+    settings,
+    ticket,
+    interaction.channel,
+    member
+  );
+
+  // ----------------------------------------------
+  // تحديث الرسالة
+  // ----------------------------------------------
+
+  await interaction.reply({
+
+    content:
+      `🙋 تم استلام التذكرة بواسطة ${member}.`,
+
+    ephemeral: false
+
+  });
+
+  // ----------------------------------------------
+  // رسالة داخل التذكرة
+  // ----------------------------------------------
+
+  await interaction.channel.send({
+
+    embeds: [
+
+      new EmbedBuilder()
+
+        .setTitle(
+          "🙋 تم استلام التذكرة"
+        )
+
+        .setDescription(
+          `تم استلام التذكرة بواسطة ${member}.`
+        )
+
+        .setColor(
+          "#57F287"
+        )
+
+        .addFields({
+
+          name:
+            "🕐 وقت الاستلام",
+
+          value:
+            logTime(),
+
+          inline: true
+
+        })
+
+        .setTimestamp()
+
+    ]
+
+  });
 }
 
 // ==================================================
-// SEND LOG
+// UNCLAIM TICKET
 // ==================================================
 
-async function sendLog(
-  guild,
-  settings,
-  embed
+async function unclaimTicket(
+  interaction,
+  ticket,
+  settings
 ) {
-  if (!settings.logsChannel) {
-    return;
-  }
 
-  const channel =
-    guild.channels.cache.get(
-      settings.logsChannel
-    );
+  const member =
+    interaction.member;
 
   if (
-    !channel ||
-    !channel.isTextBased()
+    !canManageTicket(
+      member,
+      ticket,
+      settings
+    )
   ) {
-    return;
+
+    return interaction.reply({
+
+      content:
+        "❌ لا تملك صلاحية إلغاء استلام هذه التذكرة.",
+
+      ephemeral: true
+
+    });
+
   }
 
-  try {
-    await channel.send({
-      embeds: [embed]
+  if (
+    !ticket.claimedBy
+  ) {
+
+    return interaction.reply({
+
+      content:
+        "⚠️ التذكرة غير مستلمة أصلًا.",
+
+      ephemeral: true
+
     });
-  } catch (error) {
-    console.error(
-      "❌ Log send error:",
-      error.message
-    );
+
   }
+
+  const oldClaimer =
+    ticket.claimedBy;
+
+  // ----------------------------------------------
+  // إزالة المستلم
+  // ----------------------------------------------
+
+  ticket.claimedBy =
+    null;
+
+  ticket.claimedAt =
+    null;
+
+  saveDB();
+
+  // ----------------------------------------------
+  // الصلاحيات
+  // ----------------------------------------------
+
+  await setTicketPermissions(
+    interaction.channel,
+    ticket,
+    settings
+  );
+
+  // ----------------------------------------------
+  // Log
+  // ----------------------------------------------
+
+  await logTicketUnclaimed(
+    interaction.guild,
+    settings,
+    ticket,
+    interaction.channel,
+    member,
+    oldClaimer
+  );
+
+  // ----------------------------------------------
+  // الرد
+  // ----------------------------------------------
+
+  await interaction.reply({
+
+    content:
+      `↩️ تم إلغاء استلام التذكرة.`
+
+  });
+
 }
 
 // ==================================================
-// BUILD TRANSCRIPT
+// LOCK / UNLOCK TICKET
 // ==================================================
 
-async function buildTranscript(channel) {
-  const allMessages = [];
+async function lockTicket(
+  interaction,
+  ticket,
+  settings,
+  locked = true
+) {
 
-  let lastId = null;
+  const member =
+    interaction.member;
 
-  while (true) {
-    const options = {
-      limit: 100
-    };
+  // ----------------------------------------------
+  // الصلاحية
+  // ----------------------------------------------
 
-    if (lastId) {
-      options.before = lastId;
-    }
+  if (
+    !canManageTicket(
+      member,
+      ticket,
+      settings
+    )
+  ) {
 
-    const batch =
-      await channel.messages
-        .fetch(options)
-        .catch(() => null);
+    return interaction.reply({
 
-    if (
-      !batch ||
-      batch.size === 0
-    ) {
-      break;
-    }
+      content:
+        "❌ لا تملك صلاحية التحكم بهذه التذكرة.",
 
-    allMessages.push(
-      ...batch.values()
-    );
+      ephemeral: true
 
-    lastId = batch.last().id;
+    });
 
-    if (batch.size < 100) {
-      break;
-    }
   }
 
-  allMessages.reverse();
+  // ----------------------------------------------
+  // الحالة نفسها
+  // ----------------------------------------------
 
-  const lines = [];
+  if (
+    Boolean(ticket.locked) ===
+    Boolean(locked)
+  ) {
 
-  lines.push(
-    `Transcript: ${channel.name}`
+    return interaction.reply({
+
+      content:
+        locked
+          ? "⚠️ التذكرة مقفلة بالفعل."
+          : "⚠️ التذكرة مفتوحة بالفعل.",
+
+      ephemeral: true
+
+    });
+
+  }
+
+  // ----------------------------------------------
+  // تغيير الحالة
+  // ----------------------------------------------
+
+  ticket.locked =
+    locked;
+
+  ticket.status =
+    locked
+      ? "locked"
+      : "open";
+
+  saveDB();
+
+  // ----------------------------------------------
+  // تغيير الصلاحيات
+  // ----------------------------------------------
+
+  await setTicketPermissions(
+    interaction.channel,
+    ticket,
+    settings
   );
 
-  lines.push(
-    `Channel ID: ${channel.id}`
+  // ----------------------------------------------
+  // Log
+  // ----------------------------------------------
+
+  await logTicketLock(
+    interaction.guild,
+    settings,
+    ticket,
+    interaction.channel,
+    member,
+    locked
   );
 
-  lines.push(
-    `Generated: ${new Date().toISOString()}`
+  // ----------------------------------------------
+  // الرد
+  // ----------------------------------------------
+
+  await interaction.reply({
+
+    embeds: [
+
+      new EmbedBuilder()
+
+        .setTitle(
+          locked
+            ? "🔒 تم قفل التذكرة"
+            : "🔓 تم فتح التذكرة"
+        )
+
+        .setDescription(
+          locked
+            ? `تم قفل التذكرة بواسطة ${member}.`
+            : `تم فتح التذكرة بواسطة ${member}.`
+        )
+
+        .setColor(
+          locked
+            ? "#ED4245"
+            : "#57F287"
+        )
+
+        .addFields({
+
+          name:
+            "🕐 الوقت",
+
+          value:
+            logTime(),
+
+          inline: true
+
+        })
+
+        .setTimestamp()
+
+    ]
+
+  });
+}
+
+// ==================================================
+// REQUEST CLOSE
+// ==================================================
+
+async function requestClose(
+  interaction,
+  ticket,
+  settings
+) {
+
+  const member =
+    interaction.member;
+
+  // ----------------------------------------------
+  // الصلاحية
+  // ----------------------------------------------
+
+  if (
+    !canManageTicket(
+      member,
+      ticket,
+      settings
+    )
+  ) {
+
+    return interaction.reply({
+
+      content:
+        "❌ لا تملك صلاحية إغلاق هذه التذكرة.",
+
+      ephemeral: true
+
+    });
+
+  }
+
+  // ----------------------------------------------
+  // التأكد من الحالة
+  // ----------------------------------------------
+
+  if (
+    ticket.status ===
+    "closed_waiting_rating"
+  ) {
+
+    return interaction.reply({
+
+      content:
+        "⚠️ التذكرة مغلقة بالفعل.",
+
+      ephemeral: true
+
+    });
+
+  }
+
+  if (
+    ticket.status ===
+    "deleted"
+  ) {
+
+    return interaction.reply({
+
+      content:
+        "❌ التذكرة محذوفة.",
+
+      ephemeral: true
+
+    });
+
+  }
+
+  // ----------------------------------------------
+  // تأكيد الإغلاق
+  // ----------------------------------------------
+
+  const row =
+    new ActionRowBuilder()
+      .addComponents(
+
+        new ButtonBuilder()
+          .setCustomId(
+            "ticket_close_confirm"
+          )
+          .setLabel(
+            "تأكيد الإغلاق"
+          )
+          .setEmoji(
+            "🔴"
+          )
+          .setStyle(
+            ButtonStyle.Danger
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            "ticket_close_cancel"
+          )
+          .setLabel(
+            "إلغاء"
+          )
+          .setEmoji(
+            "❌"
+          )
+          .setStyle(
+            ButtonStyle.Secondary
+          )
+
+      );
+
+  await interaction.reply({
+
+    content:
+      "⚠️ هل أنت متأكد من إغلاق هذه التذكرة؟",
+
+    components: [
+      row
+    ],
+
+    ephemeral: true
+
+  });
+}
+// ==================================================
+// CLOSE TICKET
+// ==================================================
+
+async function actuallyClose(
+  interaction,
+  ticket,
+  settings
+) {
+
+  const guild =
+    interaction.guild;
+
+  const channel =
+    interaction.channel;
+
+  const member =
+    interaction.member;
+
+  // ----------------------------------------------
+  // التأكد من الصلاحية
+  // ----------------------------------------------
+
+  if (
+    !canManageTicket(
+      member,
+      ticket,
+      settings
+    )
+  ) {
+
+    return interaction.reply({
+
+      content:
+        "❌ لا تملك صلاحية إغلاق هذه التذكرة.",
+
+      ephemeral: true
+
+    });
+
+  }
+
+  // ----------------------------------------------
+  // تغيير حالة التذكرة
+  // ----------------------------------------------
+
+  ticket.status =
+    "closed_waiting_rating";
+
+  ticket.closedAt =
+    Date.now();
+
+  ticket.locked =
+    true;
+
+  saveDB();
+
+  // ----------------------------------------------
+  // قفل التذكرة
+  // ----------------------------------------------
+
+  await setTicketPermissions(
+    channel,
+    ticket,
+    settings
   );
 
-  lines.push(
-    "=".repeat(70)
-  );
+  // ----------------------------------------------
+  // إحصائية الإغلاق
+  // ----------------------------------------------
 
-  for (const message of allMessages) {
-    if (
-      message.author?.bot &&
-      !message.content &&
-      !message.embeds?.length
-    ) {
-      continue;
-    }
+  if (ticket.claimedBy) {
 
-    const content =
-      message.content || "";
+    addStat(
+      guild.id,
+      ticket.claimedBy,
+      "closed"
+    );
 
-    const embeds =
-      message.embeds?.length
-        ? ` [embeds: ${message.embeds.length}]`
-        : "";
+  }
 
-    const attachments =
-      message.attachments?.size
-        ? ` [attachments: ${[
-            ...message.attachments.values()
-          ]
-            .map(
-              attachment =>
-                attachment.url
+  // ----------------------------------------------
+  // أزرار التقييم
+  //
+  // مهم:
+  // نضع Guild ID + Channel ID
+  // حتى تعمل الأزرار من الـ DM
+  // ----------------------------------------------
+
+  const ratingRow =
+    new ActionRowBuilder()
+      .addComponents(
+
+        new ButtonBuilder()
+          .setCustomId(
+            `rating_1_${guild.id}_${channel.id}`
+          )
+          .setLabel("1")
+          .setEmoji("⭐")
+          .setStyle(
+            ButtonStyle.Danger
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `rating_2_${guild.id}_${channel.id}`
+          )
+          .setLabel("2")
+          .setEmoji("⭐")
+          .setStyle(
+            ButtonStyle.Danger
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `rating_3_${guild.id}_${channel.id}`
+          )
+          .setLabel("3")
+          .setEmoji("⭐")
+          .setStyle(
+            ButtonStyle.Primary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `rating_4_${guild.id}_${channel.id}`
+          )
+          .setLabel("4")
+          .setEmoji("⭐")
+          .setStyle(
+            ButtonStyle.Success
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `rating_5_${guild.id}_${channel.id}`
+          )
+          .setLabel("5")
+          .setEmoji("⭐")
+          .setStyle(
+            ButtonStyle.Success
+          )
+
+      );
+
+  // ----------------------------------------------
+  // إرسال التقييم لصاحب التذكرة
+  // ----------------------------------------------
+
+  let owner = null;
+
+  try {
+
+    owner =
+      await guild.members.fetch(
+        ticket.userId
+      );
+
+  } catch {
+
+    owner = null;
+
+  }
+
+  if (owner) {
+
+    try {
+
+      await owner.send({
+
+        content:
+          `<@${ticket.userId}> ⭐`,
+
+        embeds: [
+
+          new EmbedBuilder()
+
+            .setTitle(
+              "⭐ تقييم التذكرة"
             )
-            .join(", ")}]`
-        : "";
 
-    lines.push(
-      `[${new Date(
-        message.createdTimestamp
-      ).toISOString()}] ` +
-      `${message.author?.tag || "Unknown"}: ` +
-      `${content}${embeds}${attachments}`
-    );
+            .setDescription(
+              `تم إغلاق تذكرتك في **${guild.name}**.\n\n` +
+              `يمكنك تقييم الخدمة من 1 إلى 5 نجوم.\n\n` +
+              `⭐ **التقييم اختياري**`
+            )
+
+            .setColor(
+              "#FEE75C"
+            )
+
+            .addFields(
+
+              {
+                name:
+                  "🎫 التذكرة",
+
+                value:
+                  `#${channel.name}`,
+
+                inline: true
+              },
+
+              {
+                name:
+                  "🕐 وقت الإغلاق",
+
+                value:
+                  `<t:${Math.floor(
+                    Date.now() / 1000
+                  )}:F>`,
+
+                inline: true
+              }
+
+            )
+
+            .setTimestamp()
+
+        ],
+
+        components: [
+          ratingRow
+        ]
+
+      });
+
+    } catch (error) {
+
+      console.log(
+        "⚠️ تعذر إرسال التقييم في الخاص:",
+        error.message
+      );
+
+    }
+
   }
 
-  const file = path.join(
-    TRANSCRIPT_DIR,
-    `${channel.id}-${Date.now()}.txt`
+  // ----------------------------------------------
+  // رسالة داخل التذكرة
+  // ----------------------------------------------
+
+  await channel.send({
+
+    embeds: [
+
+      new EmbedBuilder()
+
+        .setTitle(
+          "🔴 تم إغلاق التذكرة"
+        )
+
+        .setDescription(
+          `تم إغلاق التذكرة بواسطة ${member}.\n\n` +
+          `⭐ تم إرسال طلب التقييم إلى صاحب التذكرة في الخاص.\n` +
+          `التقييم اختياري ويمكن حذف التذكرة بدون تقييم.`
+        )
+
+        .setColor(
+          "#ED4245"
+        )
+
+        .addFields(
+
+          {
+            name:
+              "👤 صاحب التذكرة",
+
+            value:
+              `<@${ticket.userId}>`,
+
+            inline: true
+          },
+
+          {
+            name:
+              "🛡️ قام بالإغلاق",
+
+            value:
+              `${member}`,
+
+            inline: true
+          },
+
+          {
+            name:
+              "🕐 وقت الإغلاق",
+
+            value:
+              logTime(),
+
+            inline: true
+          }
+
+        )
+
+        .setTimestamp()
+
+    ]
+
+  });
+
+  // ----------------------------------------------
+  // Log
+  // ----------------------------------------------
+
+  await logTicketClosed(
+    guild,
+    settings,
+    ticket,
+    channel,
+    member
   );
 
-  fs.writeFileSync(
-    file,
-    lines.join("\n"),
-    "utf8"
+  // ----------------------------------------------
+  // الرد إذا لم يتم الرد سابقًا
+  // ----------------------------------------------
+
+  if (!interaction.replied &&
+      !interaction.deferred) {
+
+    await interaction.reply({
+
+      content:
+        "🔴 تم إغلاق التذكرة وتم إرسال التقييم في الخاص.",
+
+      ephemeral: true
+
+    });
+
+  }
+
+}
+
+// ==================================================
+// CANCEL CLOSE
+// ==================================================
+
+async function cancelClose(
+  interaction
+) {
+
+  return interaction.update({
+
+    content:
+      "❌ تم إلغاء إغلاق التذكرة.",
+
+    components: []
+
+  });
+
+}
+
+// ==================================================
+// HANDLE RATING
+// ==================================================
+
+async function handleRating(
+  interaction
+) {
+
+  const parts =
+    interaction.customId.split("_");
+
+  /*
+    الشكل:
+
+    rating_5_GUILD_ID_CHANNEL_ID
+
+    parts[0] = rating
+    parts[1] = الرقم
+    parts[2] = Guild ID
+    parts[3] = Channel ID
+  */
+
+  const rating =
+    Number(parts[1]);
+
+  const guildId =
+    parts[2];
+
+  const channelId =
+    parts[3];
+
+  // ----------------------------------------------
+  // التأكد من الرقم
+  // ----------------------------------------------
+
+  if (
+    !Number.isInteger(rating) ||
+    rating < 1 ||
+    rating > 5
+  ) {
+
+    return interaction.reply({
+
+      content:
+        "❌ تقييم غير صالح.",
+
+      ephemeral: true
+
+    });
+
+  }
+
+  // ----------------------------------------------
+  // جلب السيرفر
+  // ----------------------------------------------
+
+  const guild =
+    client.guilds.cache.get(
+      guildId
+    );
+
+  if (!guild) {
+
+    return interaction.reply({
+
+      content:
+        "❌ السيرفر لم يعد متاحًا للبوت.",
+
+      ephemeral: true
+
+    });
+
+  }
+
+  // ----------------------------------------------
+  // الإعدادات
+  // ----------------------------------------------
+
+  const settings =
+    getGuild(guildId);
+
+  // ----------------------------------------------
+  // جلب التذكرة من DB
+  //
+  // مهم جدًا:
+  // لا نعتمد على interaction.guild
+  // لأن الزر تم الضغط عليه في DM
+  // ----------------------------------------------
+
+  const ticket =
+    db.tickets[channelId];
+
+  if (!ticket) {
+
+    return interaction.reply({
+
+      content:
+        "❌ بيانات التذكرة غير موجودة.",
+
+      ephemeral: true
+
+    });
+
+  }
+
+  // ----------------------------------------------
+  // التأكد أن الشخص هو صاحب التذكرة
+  // ----------------------------------------------
+
+  if (
+    ticket.userId !==
+    interaction.user.id
+  ) {
+
+    return interaction.reply({
+
+      content:
+        "❌ هذا التقييم ليس خاصًا بك.",
+
+      ephemeral: true
+
+    });
+
+  }
+
+  // ----------------------------------------------
+  // منع التقييم مرتين
+  // ----------------------------------------------
+
+  if (ticket.rated) {
+
+    return interaction.reply({
+
+      content:
+        `⭐ لقد قمت بتقييم هذه التذكرة بالفعل: ${stars(ticket.rating)} (${ticket.rating}/5)`,
+
+      ephemeral: true
+
+    });
+
+  }
+
+  // ----------------------------------------------
+  // حفظ التقييم
+  // ----------------------------------------------
+
+  ticket.rating =
+    rating;
+
+  ticket.rated =
+    true;
+
+  ticket.ratedAt =
+    Date.now();
+
+  saveDB();
+
+  // ----------------------------------------------
+  // إضافة الإحصائيات
+  // ----------------------------------------------
+
+  if (ticket.claimedBy) {
+
+    addStat(
+      guildId,
+      ticket.claimedBy,
+      "ratings"
+    );
+
+    addStat(
+      guildId,
+      ticket.claimedBy,
+      "ratingSum",
+      rating
+    );
+
+  }
+
+  // ----------------------------------------------
+  // تحديث رسالة الـ DM
+  // ----------------------------------------------
+
+  await interaction.update({
+
+    content:
+      `⭐ شكرًا لك <@${interaction.user.id}>!\n\n` +
+      `تم تسجيل تقييمك: ${stars(rating)} **(${rating}/5)**`,
+
+    embeds: [
+
+      new EmbedBuilder()
+
+        .setTitle(
+          "⭐ تم تسجيل التقييم"
+        )
+
+        .setDescription(
+          `شكرًا لك على تقييم الخدمة في **${guild.name}**.\n\n` +
+          `تقييمك: ${stars(rating)} **${rating}/5**`
+        )
+
+        .setColor(
+          "#FEE75C"
+        )
+
+        .setTimestamp()
+
+    ],
+
+    components: []
+
+  });
+
+  // ----------------------------------------------
+  // Log التقييم
+  // ----------------------------------------------
+
+  await logTicketRated(
+    guild,
+    settings,
+    ticket,
+    rating,
+    interaction.user
   );
 
-  return file;
+}
+
+// ==================================================
+// RATING BUTTON IDENTIFIER
+// ==================================================
+
+function isRatingButton(
+  customId
+) {
+
+  return (
+    typeof customId === "string" &&
+    customId.startsWith(
+      "rating_"
+    )
+  );
+
+      }
+// ==================================================
+// BUILD TICKET TRANSCRIPT
+// ==================================================
+
+async function buildTranscript(
+  channel
+) {
+
+  try {
+
+    const messages = [];
+
+    let lastId = null;
+
+    while (true) {
+
+      const options = {
+        limit: 100
+      };
+
+      if (lastId) {
+        options.before =
+          lastId;
+      }
+
+      const batch =
+        await channel.messages.fetch(
+          options
+        );
+
+      if (
+        !batch ||
+        batch.size === 0
+      ) {
+        break;
+      }
+
+      messages.push(
+        ...batch.values()
+      );
+
+      lastId =
+        batch.last().id;
+
+      if (
+        batch.size < 100
+      ) {
+        break;
+      }
+    }
+
+    // ----------------------------------------------
+    // ترتيب الرسائل من الأقدم للأحدث
+    // ----------------------------------------------
+
+    messages.reverse();
+
+    let transcript =
+      "";
+
+    transcript +=
+      `========================================\n`;
+
+    transcript +=
+      `TICKET TRANSCRIPT\n`;
+
+    transcript +=
+      `SERVER: ${channel.guild.name}\n`;
+
+    transcript +=
+      `CHANNEL: #${channel.name}\n`;
+
+    transcript +=
+      `CHANNEL ID: ${channel.id}\n`;
+
+    transcript +=
+      `CREATED: ${new Date().toISOString()}\n`;
+
+    transcript +=
+      `========================================\n\n`;
+
+    for (
+      const message of messages
+    ) {
+
+      const time =
+        new Date(
+          message.createdTimestamp
+        ).toLocaleString(
+          "ar-EG"
+        );
+
+      const author =
+        message.author
+          ? `${message.author.tag} (${message.author.id})`
+          : "Unknown";
+
+      let content =
+        message.content || "";
+
+      // ----------------------------------------------
+      // Embeds
+      // ----------------------------------------------
+
+      if (
+        message.embeds &&
+        message.embeds.length
+      ) {
+
+        for (
+          const embed of message.embeds
+        ) {
+
+          if (embed.title) {
+            content +=
+              ` [Embed: ${embed.title}]`;
+          }
+
+          if (embed.description) {
+            content +=
+              ` ${embed.description}`;
+          }
+        }
+      }
+
+      // ----------------------------------------------
+      // Attachments
+      // ----------------------------------------------
+
+      if (
+        message.attachments &&
+        message.attachments.size
+      ) {
+
+        for (
+          const attachment of message.attachments.values()
+        ) {
+
+          content +=
+            ` [Attachment: ${attachment.url}]`;
+        }
+      }
+
+      transcript +=
+        `[${time}] ${author}\n`;
+
+      transcript +=
+        `${content || "[بدون نص]"}\n`;
+
+      transcript +=
+        `----------------------------------------\n`;
+    }
+
+    return transcript;
+
+  } catch (error) {
+
+    console.error(
+      "❌ Transcript error:",
+      error
+    );
+
+    return (
+      "❌ تعذر إنشاء Transcript لهذه التذكرة."
+    );
+  }
 }
 
 // ==================================================
@@ -706,821 +2957,205 @@ async function archiveTicket(
   ticket,
   channel
 ) {
-  let transcriptPath = null;
 
   try {
-    transcriptPath =
-      await buildTranscript(channel);
-  } catch (error) {
-    console.error(
-      "❌ Transcript error:",
-      error
-    );
-  }
 
-  const archive =
-    settings.archiveChannel
-      ? guild.channels.cache.get(
-          settings.archiveChannel
-        )
-      : null;
+    if (
+      !settings.archiveChannel
+    ) {
+      return null;
+    }
 
-  if (
-    archive &&
-    archive.isTextBased()
-  ) {
-    const embed =
+    const archiveChannel =
+      guild.channels.cache.get(
+        settings.archiveChannel
+      );
+
+    if (!archiveChannel) {
+      return null;
+    }
+
+    const transcript =
+      await buildTranscript(
+        channel
+      );
+
+    // ----------------------------------------------
+    // Embed الأرشيف
+    // ----------------------------------------------
+
+    const archiveEmbed =
       new EmbedBuilder()
+
         .setTitle(
-          "🗃️ Ticket Archive"
+          "📦 Ticket Archive"
         )
-        .setDescription(
-          `👤 صاحب التذكرة: <@${ticket.userId}>\n` +
-          `📥 المستلم: ${
-            ticket.claimedBy
-              ? `<@${ticket.claimedBy}>`
-              : "غير مستلمة"
-          }\n` +
-          `⭐ التقييم: ${
-            ticket.rating
-              ? `${stars(ticket.rating)} (${ticket.rating}/5)`
-              : "لم يتم التقييم"
-          }`
+
+        .setColor(
+          "#5865F2"
         )
+
+        .addFields(
+
+          {
+            name:
+              "👤 صاحب التذكرة",
+
+            value:
+              `<@${ticket.userId}>`,
+
+            inline: true
+          },
+
+          {
+            name:
+              "🆔 User ID",
+
+            value:
+              ticket.userId,
+
+            inline: true
+          },
+
+          {
+            name:
+              "🎫 اسم التذكرة",
+
+            value:
+              `#${channel.name}`,
+
+            inline: true
+          },
+
+          {
+            name:
+              "🆔 Channel ID",
+
+            value:
+              channel.id,
+
+            inline: true
+          },
+
+          {
+            name:
+              "🙋 المستلم",
+
+            value:
+              ticket.claimedBy
+                ? `<@${ticket.claimedBy}>`
+                : "لم يتم الاستلام",
+
+            inline: true
+          },
+
+          {
+            name:
+              "⭐ التقييم",
+
+            value:
+              ticket.rated
+                ? `${stars(ticket.rating)} (${ticket.rating}/5)`
+                : "لم يتم التقييم",
+
+            inline: true
+          },
+
+          {
+            name:
+              "📅 وقت الفتح",
+
+            value:
+              ticket.createdAt
+                ? `<t:${Math.floor(
+                    ticket.createdAt / 1000
+                  )}:F>`
+                : "غير معروف",
+
+            inline: true
+          },
+
+          {
+            name:
+              "🔴 وقت الإغلاق",
+
+            value:
+              ticket.closedAt
+                ? `<t:${Math.floor(
+                    ticket.closedAt / 1000
+                  )}:F>`
+                : "غير معروف",
+
+            inline: true
+          },
+
+          {
+            name:
+              "🗑️ وقت الحذف",
+
+            value:
+              logTime(),
+
+            inline: true
+          }
+
+        )
+
         .setTimestamp();
 
-    try {
-      await archive.send({
-        embeds: [embed],
-        files: transcriptPath
-          ? [transcriptPath]
-          : []
-      });
-    } catch (error) {
-      console.error(
-        "❌ Archive send error:",
-        error
-      );
-    }
-  }
+    // ----------------------------------------------
+    // إرسال معلومات الأرشيف
+    // ----------------------------------------------
 
-  if (transcriptPath) {
-    setTimeout(() => {
-      try {
-        fs.unlinkSync(
-          transcriptPath
+    await archiveChannel.send({
+      embeds: [
+        archiveEmbed
+      ]
+    });
+
+    // ----------------------------------------------
+    // إرسال Transcript
+    // ----------------------------------------------
+
+    /*
+      لو الـTranscript كبير جدًا
+      نقسمه إلى أجزاء.
+    */
+
+    const MAX_LENGTH =
+      1900;
+
+    for (
+      let i = 0;
+      i < transcript.length;
+      i += MAX_LENGTH
+    ) {
+
+      const chunk =
+        transcript.slice(
+          i,
+          i + MAX_LENGTH
         );
-      } catch {}
-    }, 60_000);
-  }
-}
 
-// ==================================================
-// SET TICKET PERMISSIONS
-// ==================================================
+      await archiveChannel.send({
 
-async function setTicketPermissions(
-  channel,
-  ticket,
-  settings
-) {
-  const guild = channel.guild;
+        content:
+          `\`\`\`\n${chunk}\n\`\`\``
 
-  const overwrites = [
-    {
-      id: guild.roles.everyone.id,
-
-      deny: [
-        PermissionsBitField.Flags.ViewChannel
-      ]
-    },
-
-    {
-      id: ticket.userId,
-
-      allow: [
-        PermissionsBitField.Flags.ViewChannel,
-        PermissionsBitField.Flags.SendMessages,
-        PermissionsBitField.Flags.ReadMessageHistory,
-        PermissionsBitField.Flags.AttachFiles
-      ]
+      });
     }
-  ];
 
-  const staffRoles = [
-    settings.juniorRole,
-    settings.middleRole,
-    settings.seniorRole,
-    settings.ownerRole
-  ].filter(Boolean);
+    return true;
 
-  for (const roleId of staffRoles) {
-    overwrites.push({
-      id: roleId,
-
-      allow: [
-        PermissionsBitField.Flags.ViewChannel,
-        PermissionsBitField.Flags.ReadMessageHistory
-      ],
-
-      deny: [
-        PermissionsBitField.Flags.SendMessages
-      ]
-    });
-  }
-
-  // ==================================================
-  // UNCLAIMED
-  // ==================================================
-
-  if (
-    !ticket.claimedBy &&
-    settings.juniorRole
-  ) {
-    overwrites.push({
-      id: settings.juniorRole,
-
-      allow: [
-        PermissionsBitField.Flags.ViewChannel,
-        PermissionsBitField.Flags.SendMessages,
-        PermissionsBitField.Flags.ReadMessageHistory
-      ]
-    });
-  }
-
-  // ==================================================
-  // CLAIMED
-  // ==================================================
-
-  if (ticket.claimedBy) {
-    overwrites.push({
-      id: ticket.claimedBy,
-
-      allow: [
-        PermissionsBitField.Flags.ViewChannel,
-        PermissionsBitField.Flags.SendMessages,
-        PermissionsBitField.Flags.ReadMessageHistory,
-        PermissionsBitField.Flags.AttachFiles
-      ]
-    });
-  }
-
-  // ==================================================
-  // LOCKED
-  // ==================================================
-
-  if (
-    ticket.locked ||
-    ticket.status ===
-      "closed_waiting_rating"
-  ) {
-    const ownerOverwrite =
-      overwrites.find(
-        overwrite =>
-          overwrite.id ===
-          ticket.userId
-      );
-
-    if (ownerOverwrite) {
-      ownerOverwrite.deny = [
-        PermissionsBitField.Flags.SendMessages
-      ];
-    }
-  }
-
-  await channel.permissionOverwrites.set(
-    overwrites
-  );
-}
-
-// ==================================================
-// CREATE TICKET
-// ==================================================
-
-async function createTicket(
-  interaction,
-  settings
-) {
-  if (!settings.ticketCategory) {
-    return interaction.reply({
-      content:
-        "❌ لم يتم تحديد Category التذاكر. استخدم `/setup category` أولًا.",
-      ephemeral: true
-    });
-  }
-
-  if (!settings.juniorRole) {
-    return interaction.reply({
-      content:
-        "❌ لم يتم تحديد رتبة الاستف الصغرى. استخدم `/setup junior` أولًا.",
-      ephemeral: true
-    });
-  }
-
-  const openTickets =
-    getOpenTicketsForUser(
-      interaction.guild.id,
-      interaction.user.id
-    );
-
-  if (
-    openTickets.length >=
-    Number(
-      settings.maxOpenTickets || 1
-    )
-  ) {
-    return interaction.reply({
-      content:
-        `❌ لديك بالفعل ${openTickets.length} تذكرة مفتوحة.`,
-      ephemeral: true
-    });
-  }
-
-  const category =
-    interaction.guild.channels.cache.get(
-      settings.ticketCategory
-    );
-
-  if (
-    !category ||
-    category.type !==
-      ChannelType.GuildCategory
-  ) {
-    return interaction.reply({
-      content:
-        "❌ Category التذاكر غير موجودة أو غير صالحة.",
-      ephemeral: true
-    });
-  }
-
-  const safeUsername =
-    interaction.user.username
-      .toLowerCase()
-      .replace(/[^a-z0-9-_]/g, "")
-      .slice(0, 18) || "user";
-
-  const name =
-    `ticket-${safeUsername}-${Math.floor(
-      Math.random() * 9999
-    )}`;
-
-  const ticket = {
-    id: null,
-
-    guildId:
-      interaction.guild.id,
-
-    userId:
-      interaction.user.id,
-
-    claimedBy: null,
-
-    status: "open",
-
-    locked: false,
-
-    createdAt: Date.now(),
-
-    closedAt: null,
-
-    rating: null,
-
-    rated: false,
-
-    deleted: false
-  };
-
-  let channel;
-
-  try {
-    channel =
-      await interaction.guild.channels.create(
-        {
-          name,
-
-          type: ChannelType.GuildText,
-
-          parent: category.id,
-
-          topic:
-            `Ticket | Owner: ${interaction.user.id}`
-        }
-      );
   } catch (error) {
+
     console.error(
-      "❌ Ticket channel creation error:",
+      "❌ Archive error:",
       error
     );
 
-    return interaction.reply({
-      content:
-        "❌ لم أستطع إنشاء التذكرة. تأكد أن رتبة البوت لديها Manage Channels.",
-      ephemeral: true
-    });
+    return false;
   }
-
-  ticket.id = channel.id;
-
-  db.tickets[channel.id] =
-    ticket;
-
-  saveDB();
-
-  try {
-    await setTicketPermissions(
-      channel,
-      ticket,
-      settings
-    );
-  } catch (error) {
-    console.error(
-      "❌ Permission setup error:",
-      error
-    );
-  }
-
-  const mention =
-    settings.mentionRole
-      ? `<@&${settings.mentionRole}>`
-      : `<@&${settings.juniorRole}>`;
-
-  await channel.send({
-    content:
-      `${interaction.user} ${mention}`,
-
-    embeds: [
-      ticketEmbed(
-        ticket,
-        settings
-      )
-    ],
-
-    components: [
-      ticketRow()
-    ]
-  });
-
-  await interaction.reply({
-    content:
-      `✅ تم فتح تذكرتك: ${channel}`,
-    ephemeral: true
-  });
-
-  await sendLog(
-    interaction.guild,
-    settings,
-
-    new EmbedBuilder()
-      .setTitle(
-        "🎫 Ticket Opened"
-      )
-      .setDescription(
-        `👤 <@${interaction.user.id}>\n` +
-        `📌 ${channel}`
-      )
-      .setTimestamp()
-  );
-}
-
-// ==================================================
-// CLAIM
-// ==================================================
-
-async function claimTicket(
-  interaction,
-  ticket,
-  settings
-) {
-  if (
-    !canClaim(
-      interaction.member,
-      settings
-    )
-  ) {
-    return interaction.reply({
-      content:
-        "❌ ليس لديك رتبة Staff مسجلة.",
-      ephemeral: true
-    });
-  }
-
-  if (ticket.claimedBy) {
-    return interaction.reply({
-      content:
-        `❌ التذكرة مستلمة بالفعل بواسطة <@${ticket.claimedBy}>.`,
-      ephemeral: true
-    });
-  }
-
-  if (
-    ticket.status ===
-    "closed_waiting_rating"
-  ) {
-    return interaction.reply({
-      content:
-        "❌ لا يمكن استلام تذكرة مغلقة.",
-      ephemeral: true
-    });
-  }
-
-  ticket.claimedBy =
-    interaction.user.id;
-
-  ticket.status = ticket.locked
-    ? "locked"
-    : "open";
-
-  saveDB();
-
-  addStat(
-    interaction.guild.id,
-    interaction.user.id,
-    "claimed"
-  );
-
-  await setTicketPermissions(
-    interaction.channel,
-    ticket,
-    settings
-  );
-
-  await interaction.reply({
-    content:
-      `📥 تم استلام التذكرة بواسطة ${interaction.user}.`
-  });
-
-  await interaction.channel.send({
-    embeds: [
-      ticketEmbed(
-        ticket,
-        settings
-      )
-    ]
-  });
-
-  await sendLog(
-    interaction.guild,
-    settings,
-
-    new EmbedBuilder()
-      .setTitle(
-        "📥 Ticket Claimed"
-      )
-      .setDescription(
-        `التذكرة: ${interaction.channel}\n` +
-        `المستلم: ${interaction.user}`
-      )
-      .setTimestamp()
-  );
-}
-
-// ==================================================
-// UNCLAIM
-// ==================================================
-
-async function unclaimTicket(
-  interaction,
-  ticket,
-  settings
-) {
-  if (!ticket.claimedBy) {
-    return interaction.reply({
-      content:
-        "❌ التذكرة غير مستلمة.",
-      ephemeral: true
-    });
-  }
-
-  const level =
-    staffLevel(
-      interaction.member,
-      settings
-    );
-
-  if (
-    ticket.claimedBy !==
-      interaction.user.id &&
-    level < 2
-  ) {
-    return interaction.reply({
-      content:
-        "❌ فقط مستلم التذكرة أو Staff أعلى يمكنه إلغاء الاستلام.",
-      ephemeral: true
-    });
-  }
-
-  const old =
-    ticket.claimedBy;
-
-  ticket.claimedBy = null;
-
-  ticket.status =
-    ticket.locked
-      ? "locked"
-      : "open";
-
-  saveDB();
-
-  await setTicketPermissions(
-    interaction.channel,
-    ticket,
-    settings
-  );
-
-  await interaction.reply({
-    content:
-      `↩️ تم إلغاء استلام التذكرة بواسطة ${interaction.user}.`
-  });
-
-  await sendLog(
-    interaction.guild,
-    settings,
-
-    new EmbedBuilder()
-      .setTitle(
-        "↩️ Ticket Unclaimed"
-      )
-      .setDescription(
-        `التذكرة: ${interaction.channel}\n` +
-        `المستلم السابق: <@${old}>\n` +
-        `بواسطة: ${interaction.user}`
-      )
-      .setTimestamp()
-  );
-}
-
-// ==================================================
-// LOCK / UNLOCK
-// ==================================================
-
-async function lockTicket(
-  interaction,
-  ticket,
-  settings,
-  locked = true
-) {
-  if (
-    !canManageTicket(
-      interaction.member,
-      ticket,
-      settings
-    )
-  ) {
-    return interaction.reply({
-      content:
-        "❌ لا تملك صلاحية إدارة هذه التذكرة.",
-      ephemeral: true
-    });
-  }
-
-  if (
-    ticket.status ===
-      "closed_waiting_rating" &&
-    !locked
-  ) {
-    return interaction.reply({
-      content:
-        "❌ لا يمكن فتح تذكرة مغلقة بانتظار التقييم.",
-      ephemeral: true
-    });
-  }
-
-  ticket.locked = locked;
-
-  ticket.status =
-    locked
-      ? "locked"
-      : "open";
-
-  saveDB();
-
-  await setTicketPermissions(
-    interaction.channel,
-    ticket,
-    settings
-  );
-
-  await interaction.reply({
-    content: locked
-      ? "🔒 تم قفل التذكرة."
-      : "🔓 تم فتح التذكرة."
-  });
-
-  await sendLog(
-    interaction.guild,
-    settings,
-
-    new EmbedBuilder()
-      .setTitle(
-        locked
-          ? "🔒 Ticket Locked"
-          : "🔓 Ticket Unlocked"
-      )
-      .setDescription(
-        `التذكرة: ${interaction.channel}\n` +
-        `بواسطة: ${interaction.user}`
-      )
-      .setTimestamp()
-  );
-}
-
-// ==================================================
-// REQUEST CLOSE
-// ==================================================
-
-async function requestClose(
-  interaction,
-  ticket,
-  settings
-) {
-  if (
-    !canManageTicket(
-      interaction.member,
-      ticket,
-      settings
-    )
-  ) {
-    return interaction.reply({
-      content:
-        "❌ لا تملك صلاحية إغلاق هذه التذكرة.",
-      ephemeral: true
-    });
-  }
-
-  if (
-    ticket.status ===
-    "closed_waiting_rating"
-  ) {
-    return interaction.reply({
-      content:
-        "❌ التذكرة مغلقة بالفعل وتنتظر التقييم.",
-      ephemeral: true
-    });
-  }
-
-  const confirm =
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(
-          "close_confirm"
-        )
-        .setLabel(
-          "تأكيد الإغلاق"
-        )
-        .setStyle(
-          ButtonStyle.Danger
-        ),
-
-      new ButtonBuilder()
-        .setCustomId(
-          "close_cancel"
-        )
-        .setLabel("إلغاء")
-        .setStyle(
-          ButtonStyle.Secondary
-        )
-    );
-
-  return interaction.reply({
-    content:
-      "⚠️ هل أنت متأكد من إغلاق التذكرة؟ بعد الإغلاق سيتم طلب التقييم من صاحب التذكرة.",
-
-    components: [confirm],
-
-    ephemeral: true
-  });
-}
-
-// ==================================================
-// ACTUALLY CLOSE
-// ==================================================
-
-async function actuallyClose(
-  interaction,
-  ticket,
-  settings
-) {
-  ticket.status =
-    "closed_waiting_rating";
-
-  ticket.closedAt =
-    Date.now();
-
-  ticket.locked = true;
-
-  saveDB();
-
-  await setTicketPermissions(
-    interaction.channel,
-    ticket,
-    settings
-  );
-
-  if (ticket.claimedBy) {
-    addStat(
-      interaction.guild.id,
-      ticket.claimedBy,
-      "closed"
-    );
-  }
-
-  const owner =
-    await interaction.guild.members
-      .fetch(ticket.userId)
-      .catch(() => null);
-
-  const ratingRow =
-    new ActionRowBuilder().addComponents(
-      ...[1, 2, 3, 4, 5].map(
-        number =>
-          new ButtonBuilder()
-            .setCustomId(
-              `rating_${number}_${interaction.channel.id}`
-            )
-            .setLabel(
-              String(number)
-            )
-            .setEmoji("⭐")
-            .setStyle(
-              number >= 4
-                ? ButtonStyle.Success
-                : number >= 3
-                  ? ButtonStyle.Primary
-                  : ButtonStyle.Danger
-            )
-      )
-    );
-
-  if (owner) {
-    try {
-      await owner.send({
-        embeds: [
-          new EmbedBuilder()
-            .setTitle(
-              "⭐ تقييم التذكرة"
-            )
-            .setDescription(
-              `تم إغلاق تذكرتك في **${interaction.guild.name}**.\n` +
-              "يرجى تقييم الخدمة من 1 إلى 5."
-            )
-            .setColor("#FEE75C")
-        ],
-
-        components: [
-          ratingRow
-        ]
-      });
-    } catch {
-      await interaction.channel.send(
-        `⚠️ <@${ticket.userId}> تعذر إرسال الـDM. استخدم أزرار التقييم هنا.`
-      );
-
-      await interaction.channel.send({
-        components: [
-          ratingRow
-        ]
-      });
-    }
-  }
-
-  if (
-    interaction.isButton?.() &&
-    interaction.deferred === false
-  ) {
-    await interaction.followUp({
-      content:
-        "🔒 تم إغلاق التذكرة. تم طلب التقييم من صاحبها.",
-      ephemeral: true
-    }).catch(() => {});
-  }
-
-  await interaction.channel.send({
-    embeds: [
-      new EmbedBuilder()
-        .setTitle(
-          "🔒 تم إغلاق التذكرة"
-        )
-        .setDescription(
-          "⭐ يجب على صاحب التذكرة إكمال التقييم قبل السماح بالحذف."
-        )
-        .setColor("#ED4245")
-    ]
-  });
-
-  await sendLog(
-    interaction.guild,
-    settings,
-
-    new EmbedBuilder()
-      .setTitle(
-        "🔒 Ticket Closed"
-      )
-      .setDescription(
-        `التذكرة: ${interaction.channel}\n` +
-        `بواسطة: ${interaction.user}`
-      )
-      .setTimestamp()
-  );
 }
 
 // ==================================================
@@ -1532,1196 +3167,424 @@ async function deleteTicket(
   ticket,
   settings
 ) {
+
+  const member =
+    interaction.member;
+
+  const channel =
+    interaction.channel;
+
+  const guild =
+    interaction.guild;
+
+  // ----------------------------------------------
+  // الصلاحية
+  // ----------------------------------------------
+
   if (
     !canManageTicket(
-      interaction.member,
+      member,
       ticket,
       settings
     )
   ) {
+
     return interaction.reply({
+
       content:
         "❌ لا تملك صلاحية حذف هذه التذكرة.",
+
       ephemeral: true
+
     });
+
   }
+
+  // ----------------------------------------------
+  // منع الحذف المتكرر
+  // ----------------------------------------------
 
   if (
-    ticket.status !==
-    "closed_waiting_rating" &&
-    settings.requireRating
+    ticket.status ===
+    "deleted"
   ) {
+
     return interaction.reply({
+
       content:
-        "❌ يجب إغلاق التذكرة أولًا ثم الحصول على التقييم.",
+        "⚠️ هذه التذكرة يتم حذفها بالفعل.",
+
       ephemeral: true
+
     });
+
   }
+
+  // ----------------------------------------------
+  // الرد قبل الأرشفة
+  // ----------------------------------------------
 
   if (
-    settings.requireRating &&
-    !ticket.rated
+    !interaction.replied &&
+    !interaction.deferred
   ) {
-    return interaction.reply({
+
+    await interaction.reply({
+
       content:
-        "⭐ لا يمكن حذف التذكرة قبل أن يقوم صاحبها بالتقييم.",
+        "🗑️ جاري حفظ التذكرة وحذف الروم...",
+
       ephemeral: true
+
     });
+
   }
 
-  await interaction.reply({
-    content:
-      "🗃️ يتم حفظ الـTranscript ثم حذف التذكرة..."
-  });
+  // ----------------------------------------------
+  // حفظ Transcript + Archive
+  // ----------------------------------------------
 
   await archiveTicket(
-    interaction.guild,
+    guild,
     settings,
     ticket,
-    interaction.channel
+    channel
   );
 
-  await sendLog(
-    interaction.guild,
-    settings,
+  // ----------------------------------------------
+  // حفظ معلومات الحذف
+  //
+  // مهم:
+  // لا نحذف db.tickets[channel.id]
+  // ----------------------------------------------
 
-    new EmbedBuilder()
-      .setTitle(
-        "🗑️ Ticket Deleted"
-      )
-      .setDescription(
-        `التذكرة: ${interaction.channel}\n` +
-        `بواسطة: ${interaction.user}`
-      )
-      .setTimestamp()
-  );
+  ticket.deleted =
+    true;
 
-  ticket.deleted = true;
+  ticket.deletedAt =
+    Date.now();
 
-  delete db.tickets[
-    interaction.channel.id
-  ];
+  ticket.status =
+    "deleted";
+
+  // ----------------------------------------------
+  // حفظ آخر حالة في DB
+  // ----------------------------------------------
 
   saveDB();
 
-  setTimeout(() => {
-    interaction.channel
-      .delete(
-        "Ticket deleted after archive"
-      )
-      .catch(() => {});
-  }, 1500);
+  // ----------------------------------------------
+  // Log الحذف
+  // ----------------------------------------------
+
+  await logTicketDeleted(
+    guild,
+    settings,
+    ticket,
+    channel,
+    member
+  );
+
+  // ----------------------------------------------
+  // إرسال رسالة أخيرة
+  // ----------------------------------------------
+
+  try {
+
+    await channel.send({
+
+      embeds: [
+
+        new EmbedBuilder()
+
+          .setTitle(
+            "🗑️ سيتم حذف التذكرة"
+          )
+
+          .setDescription(
+            `سيتم حذف هذه التذكرة بواسطة ${member}.\n` +
+            `تم حفظ بياناتها في الأرشيف.\n\n` +
+            `⭐ التقييم المرسل في الخاص سيظل صالحًا.`
+          )
+
+          .setColor(
+            "#ED4245"
+          )
+
+          .addFields({
+
+            name:
+              "🕐 وقت الحذف",
+
+            value:
+              logTime(),
+
+            inline: true
+
+          })
+
+          .setTimestamp()
+
+      ]
+
+    });
+
+  } catch {
+    // تجاهل الخطأ إذا لم يعد بإمكان البوت الإرسال
+  }
+
+  // ----------------------------------------------
+  // حذف الروم
+  // ----------------------------------------------
+
+  setTimeout(
+    async () => {
+
+      try {
+
+        await channel.delete(
+          "Ticket deleted"
+        );
+
+      } catch (error) {
+
+        console.error(
+          "❌ Channel delete error:",
+          error
+        );
+
+      }
+
+    },
+    1500
+  );
 }
 
 // ==================================================
-// STAFF STATS
+// DELETE BUTTON CONFIRMATION
 // ==================================================
 
-async function showStats(
+async function confirmDelete(
   interaction,
-  user
+  ticket,
+  settings
 ) {
-  const settings =
-    getGuild(
-      interaction.guild.id
-    );
 
   const member =
-    user
-      ? await interaction.guild.members
-          .fetch(user.id)
-          .catch(() => null)
-      : interaction.member;
+    interaction.member;
 
-  if (!member) {
+  if (
+    !canManageTicket(
+      member,
+      ticket,
+      settings
+    )
+  ) {
+
     return interaction.reply({
+
       content:
-        "❌ لم أستطع العثور على العضو.",
+        "❌ لا تملك صلاحية حذف هذه التذكرة.",
+
       ephemeral: true
+
     });
+
   }
 
-  const staff =
-    settings.staff[member.id] || {
-      claimed: 0,
-      closed: 0,
-      ratings: 0,
-      ratingSum: 0
-    };
+  const row =
+    new ActionRowBuilder()
+      .addComponents(
 
-  const avg =
-    staff.ratings
-      ? (
-          staff.ratingSum /
-          staff.ratings
-        ).toFixed(2)
-      : "لا يوجد";
+        new ButtonBuilder()
 
-  const embed =
-    new EmbedBuilder()
-      .setTitle(
-        "📊 إحصائيات الإداري"
-      )
-      .setDescription(
-        `${member}`
-      )
-      .addFields(
-        {
-          name:
-            "🎫 التذاكر المستلمة",
-          value: String(
-            staff.claimed || 0
+          .setCustomId(
+            "ticket_delete_confirm"
+          )
+
+          .setLabel(
+            "تأكيد الحذف"
+          )
+
+          .setEmoji(
+            "🗑️"
+          )
+
+          .setStyle(
+            ButtonStyle.Danger
           ),
-          inline: true
-        },
 
-        {
-          name:
-            "🔒 التذاكر المغلقة",
-          value: String(
-            staff.closed || 0
-          ),
-          inline: true
-        },
+        new ButtonBuilder()
 
-        {
-          name:
-            "⭐ عدد التقييمات",
-          value: String(
-            staff.ratings || 0
-          ),
-          inline: true
-        },
+          .setCustomId(
+            "ticket_delete_cancel"
+          )
 
-        {
-          name:
-            "⭐ متوسط التقييم",
-          value: avg,
-          inline: true
-        },
+          .setLabel(
+            "إلغاء"
+          )
 
-        {
-          name:
-            "🏷️ المستوى",
-          value:
-            levelName(
-              staffLevel(
-                member,
-                settings
-              )
-            ),
-          inline: true
-        }
-      )
-      .setColor("#5865F2");
+          .setEmoji(
+            "❌"
+          )
+
+          .setStyle(
+            ButtonStyle.Secondary
+          )
+
+      );
 
   return interaction.reply({
-    embeds: [embed],
+
+    content:
+      "⚠️ هل أنت متأكد من حذف التذكرة؟\n\n" +
+      "سيتم حفظ الـTranscript قبل الحذف.",
+
+    components: [
+      row
+    ],
+
     ephemeral: true
+
   });
 }
 
 // ==================================================
-// SLASH COMMANDS
+// CANCEL DELETE
 // ==================================================
 
-const commands = [
-  new SlashCommandBuilder()
-    .setName("setup")
-    .setDescription(
-      "إعداد نظام التذاكر"
-    )
-
-    .addSubcommand(
-      sub =>
-        sub
-          .setName("junior")
-          .setDescription(
-            "تحديد رتبة الاستف الصغرى"
-          )
-          .addRoleOption(
-            option =>
-              option
-                .setName("role")
-                .setDescription(
-                  "الرتبة"
-                )
-                .setRequired(true)
-          )
-    )
-
-    .addSubcommand(
-      sub =>
-        sub
-          .setName("middle")
-          .setDescription(
-            "تحديد رتبة الاستف الوسطى"
-          )
-          .addRoleOption(
-            option =>
-              option
-                .setName("role")
-                .setDescription(
-                  "الرتبة"
-                )
-                .setRequired(true)
-          )
-    )
-
-    .addSubcommand(
-      sub =>
-        sub
-          .setName("senior")
-          .setDescription(
-            "تحديد رتبة الاستف العليا"
-          )
-          .addRoleOption(
-            option =>
-              option
-                .setName("role")
-                .setDescription(
-                  "الرتبة"
-                )
-                .setRequired(true)
-          )
-    )
-
-    .addSubcommand(
-      sub =>
-        sub
-          .setName("owner")
-          .setDescription(
-            "تحديد رتبة الأونر"
-          )
-          .addRoleOption(
-            option =>
-              option
-                .setName("role")
-                .setDescription(
-                  "الرتبة"
-                )
-                .setRequired(true)
-          )
-    )
-
-    .addSubcommand(
-      sub =>
-        sub
-          .setName("category")
-          .setDescription(
-            "تحديد Category التذاكر"
-          )
-          .addChannelOption(
-            option =>
-              option
-                .setName("channel")
-                .setDescription(
-                  "Category"
-                )
-                .addChannelTypes(
-                  ChannelType.GuildCategory
-                )
-                .setRequired(true)
-          )
-    )
-
-    .addSubcommand(
-      sub =>
-        sub
-          .setName("logs")
-          .setDescription(
-            "تحديد روم اللوج"
-          )
-          .addChannelOption(
-            option =>
-              option
-                .setName("channel")
-                .setDescription(
-                  "الروم"
-                )
-                .addChannelTypes(
-                  ChannelType.GuildText
-                )
-                .setRequired(true)
-          )
-    )
-
-    .addSubcommand(
-      sub =>
-        sub
-          .setName("archive")
-          .setDescription(
-            "تحديد روم الأرشيف"
-          )
-          .addChannelOption(
-            option =>
-              option
-                .setName("channel")
-                .setDescription(
-                  "الروم"
-                )
-                .addChannelTypes(
-                  ChannelType.GuildText
-                )
-                .setRequired(true)
-          )
-    )
-
-    .addSubcommand(
-      sub =>
-        sub
-          .setName("application")
-          .setDescription(
-            "تحديد روم التقديم"
-          )
-          .addChannelOption(
-            option =>
-              option
-                .setName("channel")
-                .setDescription(
-                  "الروم"
-                )
-                .addChannelTypes(
-                  ChannelType.GuildText
-                )
-                .setRequired(true)
-          )
-    )
-
-    .addSubcommand(
-      sub =>
-        sub
-          .setName("mention")
-          .setDescription(
-            "الرتبة التي يتم منشنها عند فتح التذكرة"
-          )
-          .addRoleOption(
-            option =>
-              option
-                .setName("role")
-                .setDescription(
-                  "الرتبة"
-                )
-                .setRequired(true)
-          )
-    )
-
-    .addSubcommand(
-      sub =>
-        sub
-          .setName("panel-channel")
-          .setDescription(
-            "تحديد روم Panel التذاكر"
-          )
-          .addChannelOption(
-            option =>
-              option
-                .setName("channel")
-                .setDescription(
-                  "الروم"
-                )
-                .addChannelTypes(
-                  ChannelType.GuildText
-                )
-                .setRequired(true)
-          )
-    )
-
-    .addSubcommand(
-      sub =>
-        sub
-          .setName("max-tickets")
-          .setDescription(
-            "عدد التذاكر المفتوحة المسموحة للعضو"
-          )
-          .addIntegerOption(
-            option =>
-              option
-                .setName("number")
-                .setDescription(
-                  "العدد"
-                )
-                .setMinValue(1)
-                .setMaxValue(5)
-                .setRequired(true)
-          )
-    )
-
-    .addSubcommand(
-      sub =>
-        sub
-          .setName("require-rating")
-          .setDescription(
-            "إجبار التقييم قبل الحذف"
-          )
-          .addBooleanOption(
-            option =>
-              option
-                .setName("enabled")
-                .setDescription(
-                  "تفعيل"
-                )
-                .setRequired(true)
-          )
-    ),
-
-  new SlashCommandBuilder()
-    .setName("panel")
-    .setDescription(
-      "إرسال Panel التذاكر"
-    ),
-
-  new SlashCommandBuilder()
-    .setName("panel-edit")
-    .setDescription(
-      "تعديل Panel التذاكر"
-    ),
-
-  new SlashCommandBuilder()
-    .setName("ticket-settings")
-    .setDescription(
-      "عرض إعدادات التذاكر"
-    ),
-
-  new SlashCommandBuilder()
-    .setName("stats")
-    .setDescription(
-      "إحصائيات الإداري"
-    )
-    .addUserOption(
-      option =>
-        option
-          .setName("user")
-          .setDescription(
-            "الإداري"
-          )
-          .setRequired(false)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("close")
-    .setDescription(
-      "إغلاق التذكرة"
-    ),
-
-  new SlashCommandBuilder()
-    .setName("delete")
-    .setDescription(
-      "حذف التذكرة"
-    ),
-
-  new SlashCommandBuilder()
-    .setName("lock")
-    .setDescription(
-      "قفل التذكرة"
-    ),
-
-  new SlashCommandBuilder()
-    .setName("unlock")
-    .setDescription(
-      "فتح التذكرة"
-    ),
-
-  new SlashCommandBuilder()
-    .setName("application-panel")
-    .setDescription(
-      "إرسال Panel التقديم"
-    )
-].map(command =>
-  command.toJSON()
-);
-
-// ==================================================
-// REGISTER COMMANDS
-// ==================================================
-
-async function registerCommands() {
-  const rest =
-    new REST({
-      version: "10"
-    }).setToken(TOKEN);
-
-  await rest.put(
-    Routes.applicationCommands(
-      CLIENT_ID
-    ),
-    {
-      body: commands
-    }
-  );
-
-  console.log(
-    "✅ Slash commands registered globally."
-  );
-}
-
-// ==================================================
-// HANDLE SLASH COMMANDS
-// ==================================================
-
-async function handleSlash(
+async function cancelDelete(
   interaction
 ) {
-  if (!interaction.guild) {
-    return interaction.reply({
-      content:
-        "❌ هذا الأمر يعمل داخل السيرفر فقط.",
-      ephemeral: true
-    });
-  }
 
-  const settings =
-    getGuild(
-      interaction.guild.id
-    );
+  return interaction.update({
 
-  const command =
-    interaction.commandName;
+    content:
+      "❌ تم إلغاء حذف التذكرة.",
 
-  // ==================================================
-  // SETUP
-  // ==================================================
+    components: []
 
-  if (command === "setup") {
-    if (
-      !isServerManager(
-        interaction.member
-      )
-    ) {
-      return interaction.reply({
-        content:
-          "❌ تحتاج Manage Server أو Administrator.",
-        ephemeral: true
-      });
-    }
+  });
 
-    const sub =
-      interaction.options.getSubcommand();
-
-    const role =
-      interaction.options.getRole(
-        "role"
-      );
-
-    const channel =
-      interaction.options.getChannel(
-        "channel"
-      );
-
-    const map = {
-      junior: "juniorRole",
-      middle: "middleRole",
-      senior: "seniorRole",
-      owner: "ownerRole",
-
-      category: "ticketCategory",
-
-      logs: "logsChannel",
-
-      archive: "archiveChannel",
-
-      application:
-        "applicationChannel",
-
-      mention: "mentionRole",
-
-      "panel-channel":
-        "panelChannel"
-    };
-
-    if (sub === "max-tickets") {
-      settings.maxOpenTickets =
-        interaction.options.getInteger(
-          "number"
-        );
-    }
-
-    else if (
-      sub === "require-rating"
-    ) {
-      settings.requireRating =
-        interaction.options.getBoolean(
-          "enabled"
-        );
-    }
-
-    else {
-      const key = map[sub];
-
-      if (!key) {
-        return interaction.reply({
-          content:
-            "❌ إعداد غير معروف.",
-          ephemeral: true
-        });
-      }
-
-      settings[key] =
-        role
-          ? role.id
-          : channel.id;
-    }
-
-    saveDB();
-
-    return interaction.reply({
-      content:
-        `✅ تم حفظ إعداد **${sub}** بنجاح.`,
-      ephemeral: true
-    });
-  }
-
-  // ==================================================
-  // TICKET SETTINGS
-  // ==================================================
-
-  if (
-    command ===
-    "ticket-settings"
-  ) {
-    const fields = [
-      [
-        "الصغرى",
-        settings.juniorRole
-          ? `<@&${settings.juniorRole}>`
-          : "❌"
-      ],
-
-      [
-        "الوسطى",
-        settings.middleRole
-          ? `<@&${settings.middleRole}>`
-          : "❌"
-      ],
-
-      [
-        "العليا",
-        settings.seniorRole
-          ? `<@&${settings.seniorRole}>`
-          : "❌"
-      ],
-
-      [
-        "الأونر",
-        settings.ownerRole
-          ? `<@&${settings.ownerRole}>`
-          : "❌"
-      ],
-
-      [
-        "Category",
-        settings.ticketCategory
-          ? `<#${settings.ticketCategory}>`
-          : "❌"
-      ],
-
-      [
-        "Logs",
-        settings.logsChannel
-          ? `<#${settings.logsChannel}>`
-          : "❌"
-      ],
-
-      [
-        "Archive",
-        settings.archiveChannel
-          ? `<#${settings.archiveChannel}>`
-          : "❌"
-      ],
-
-      [
-        "Applications",
-        settings.applicationChannel
-          ? `<#${settings.applicationChannel}>`
-          : "❌"
-      ],
-
-      [
-        "Panel",
-        settings.panelChannel
-          ? `<#${settings.panelChannel}>`
-          : "❌"
-      ],
-
-      [
-        "حد التذاكر",
-        String(
-          settings.maxOpenTickets ||
-          1
-        )
-      ],
-
-      [
-        "التقييم إجباري",
-        settings.requireRating
-          ? "نعم ⭐"
-          : "لا"
-      ]
-    ];
-
-    const embed =
-      new EmbedBuilder()
-        .setTitle(
-          "⚙️ إعدادات التذاكر"
-        )
-        .setColor("#5865F2")
-        .addFields(
-          fields.map(
-            ([name, value]) => ({
-              name,
-              value,
-              inline: true
-            })
-          )
-        );
-
-    return interaction.reply({
-      embeds: [embed],
-      ephemeral: true
-    });
-  }
-
-  // ==================================================
-  // PANEL
-  // ==================================================
-
-  if (command === "panel") {
-    if (
-      !isServerManager(
-        interaction.member
-      )
-    ) {
-      return interaction.reply({
-        content:
-          "❌ تحتاج Manage Server.",
-        ephemeral: true
-      });
-    }
-
-    const target =
-      settings.panelChannel
-        ? interaction.guild.channels.cache.get(
-            settings.panelChannel
-          )
-        : interaction.channel;
-
-    if (
-      !target ||
-      !target.isTextBased()
-    ) {
-      return interaction.reply({
-        content:
-          "❌ حدد روم Panel باستخدام `/setup panel-channel`.",
-        ephemeral: true
-      });
-    }
-
-    let message;
-
-    try {
-      message =
-        await target.send({
-          embeds: [
-            panelEmbed(
-              settings
-            )
-          ],
-
-          components: [
-            panelRow(
-              settings
-            )
-          ]
-        });
-    } catch (error) {
-      console.error(
-        "❌ Panel send error:",
-        error
-      );
-
-      return interaction.reply({
-        content:
-          "❌ لا أستطيع إرسال الـPanel في هذا الروم. تأكد من صلاحيات البوت.",
-        ephemeral: true
-      });
-    }
-
-    settings.panelChannel =
-      target.id;
-
-    settings.panelMessage =
-      message.id;
-
-    saveDB();
-
-    return interaction.reply({
-      content:
-        `✅ تم إرسال Panel في ${target}.`,
-      ephemeral: true
-    });
-  }
-
-  // ==================================================
-  // PANEL EDIT
-  // ==================================================
-
-  if (
-    command === "panel-edit"
-  ) {
-    if (
-      !isServerManager(
-        interaction.member
-      )
-    ) {
-      return interaction.reply({
-        content:
-          "❌ تحتاج Manage Server.",
-        ephemeral: true
-      });
-    }
-
-    const modal =
-      new ModalBuilder()
-        .setCustomId(
-          "panel_edit_modal"
-        )
-        .setTitle(
-          "تعديل Panel"
-        );
-
-    const title =
-      new TextInputBuilder()
-        .setCustomId("title")
-        .setLabel("العنوان")
-        .setStyle(
-          TextInputStyle.Short
-        )
-        .setRequired(true)
-        .setMaxLength(256)
-        .setValue(
-          settings.panel.title
-        );
-
-    const description =
-      new TextInputBuilder()
-        .setCustomId(
-          "description"
-        )
-        .setLabel("الوصف")
-        .setStyle(
-          TextInputStyle.Paragraph
-        )
-        .setRequired(true)
-        .setMaxLength(4000)
-        .setValue(
-          settings.panel.description
-        );
-
-    const button =
-      new TextInputBuilder()
-        .setCustomId("button")
-        .setLabel("نص الزر")
-        .setStyle(
-          TextInputStyle.Short
-        )
-        .setRequired(true)
-        .setMaxLength(80)
-        .setValue(
-          settings.panel.buttonText
-        );
-
-    const color =
-      new TextInputBuilder()
-        .setCustomId("color")
-        .setLabel(
-          "لون HEX مثل #5865F2"
-        )
-        .setStyle(
-          TextInputStyle.Short
-        )
-        .setRequired(false)
-        .setMaxLength(7)
-        .setValue(
-          settings.panel.color
-        );
-
-    const footer =
-      new TextInputBuilder()
-        .setCustomId("footer")
-        .setLabel("Footer")
-        .setStyle(
-          TextInputStyle.Short
-        )
-        .setRequired(false)
-        .setMaxLength(200)
-        .setValue(
-          settings.panel.footer
-        );
-
-    modal.addComponents(
-      new ActionRowBuilder().addComponents(
-        title
-      ),
-
-      new ActionRowBuilder().addComponents(
-        description
-      ),
-
-      new ActionRowBuilder().addComponents(
-        button
-      ),
-
-      new ActionRowBuilder().addComponents(
-        color
-      ),
-
-      new ActionRowBuilder().addComponents(
-        footer
-      )
-    );
-
-    return interaction.showModal(
-      modal
-    );
-  }
-
-  // ==================================================
-  // STATS
-  // ==================================================
-
-  if (command === "stats") {
-    const user =
-      interaction.options.getUser(
-        "user"
-      ) || interaction.user;
-
-    return showStats(
-      interaction,
-      user
-    );
-  }
-
-  // ==================================================
-  // TICKET ACTIONS
-  // ==================================================
-
-  if (
-    [
-      "close",
-      "delete",
-      "lock",
-      "unlock"
-    ].includes(command)
-  ) {
-    const ticket =
-      db.tickets[
-        interaction.channel.id
-      ];
-
-    if (!ticket) {
-      return interaction.reply({
-        content:
-          "❌ هذا الروم ليس تذكرة.",
-        ephemeral: true
-      });
-    }
-
-    if (command === "close") {
-      return requestClose(
-        interaction,
-        ticket,
-        settings
-      );
-    }
-
-    if (command === "delete") {
-      return deleteTicket(
-        interaction,
-        ticket,
-        settings
-      );
-    }
-
-    if (command === "lock") {
-      return lockTicket(
-        interaction,
-        ticket,
-        settings,
-        true
-      );
-    }
-
-    if (command === "unlock") {
-      return lockTicket(
-        interaction,
-        ticket,
-        settings,
-        false
-      );
-    }
-  }
-
-  // ==================================================
-  // APPLICATION PANEL
-  // ==================================================
-
-  if (
-    command ===
-    "application-panel"
-  ) {
-    if (
-      !isServerManager(
-        interaction.member
-      )
-    ) {
-      return interaction.reply({
-        content:
-          "❌ تحتاج Manage Server.",
-        ephemeral: true
-      });
-    }
-
-    if (
-      !settings.applicationChannel
-    ) {
-      return interaction.reply({
-        content:
-          "❌ حدد روم التقديم أولًا باستخدام `/setup application`.",
-        ephemeral: true
-      });
-    }
-
-    const channel =
-      interaction.guild.channels.cache.get(
-        settings.applicationChannel
-      );
-
-    if (
-      !channel ||
-      !channel.isTextBased()
-    ) {
-      return interaction.reply({
-        content:
-          "❌ روم التقديم غير صالح.",
-        ephemeral: true
-      });
-    }
-
-    const embed =
-      new EmbedBuilder()
-        .setTitle(
-          settings.application.title
-        )
-        .setDescription(
-          settings.application.description
-        )
-        .setColor("#5865F2");
-
-    const row =
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(
-            "application_open"
-          )
-          .setLabel(
-            settings.application.buttonText
-          )
-          .setEmoji(
-            settings.application.emoji
-          )
-          .setStyle(
-            ButtonStyle.Primary
-          )
-      );
-
-    try {
-      await channel.send({
-        embeds: [embed],
-        components: [row]
-      });
-    } catch (error) {
-      console.error(
-        "❌ Application panel error:",
-        error
-      );
-
-      return interaction.reply({
-        content:
-          "❌ لا أستطيع إرسال Panel التقديم.",
-        ephemeral: true
-      });
-    }
-
-    return interaction.reply({
-      content:
-        `✅ تم إرسال Panel التقديم في ${channel}.`,
-      ephemeral: true
-    });
-  }
-}
-
+        }
 // ==================================================
-// INTERACTION CREATE
+// INTERACTION HANDLER
 // ==================================================
 
 client.on(
   "interactionCreate",
   async interaction => {
-    try {
-      // ==================================================
-      // SLASH
-      // ==================================================
 
-      if (
-        interaction.isChatInputCommand()
-      ) {
-        return handleSlash(
-          interaction
-        );
-      }
+    try {
 
       // ==================================================
       // BUTTONS
       // ==================================================
 
-      if (
-        interaction.isButton()
-      ) {
+      if (interaction.isButton()) {
+
+        // --------------------------------------------------
+        // ⭐ RATING BUTTON
+        // --------------------------------------------------
+        // لازم يتعامل معاه قبل فحص interaction.guild
+        // لأن التقييم يتم من الـDM
+        // --------------------------------------------------
+
+        if (
+          isRatingButton(
+            interaction.customId
+          )
+        ) {
+
+          return await handleRating(
+            interaction
+          );
+
+        }
+
+        // --------------------------------------------------
+        // أي زر آخر لازم يكون داخل السيرفر
+        // --------------------------------------------------
+
         if (!interaction.guild) {
+
           return interaction.reply({
+
             content:
               "❌ هذا الزر يعمل داخل السيرفر فقط.",
+
             ephemeral: true
+
           });
+
         }
+
+        // --------------------------------------------------
+        // SETTINGS
+        // --------------------------------------------------
 
         const settings =
           getGuild(
             interaction.guild.id
           );
 
-        // ==================================================
-        // OPEN TICKET
-        // ==================================================
+        // --------------------------------------------------
+        // TICKET OPEN
+        // --------------------------------------------------
 
         if (
           interaction.customId ===
           "ticket_open"
         ) {
-          return createTicket(
+
+          return await createTicket(
             interaction,
             settings
           );
+
         }
 
-        // ==================================================
-        // CURRENT TICKET
-        // ==================================================
+        // --------------------------------------------------
+        // GET TICKET
+        // --------------------------------------------------
 
         const ticket =
           db.tickets[
-            interaction.channel?.id
+            interaction.channel.id
           ];
+
+        // --------------------------------------------------
+        // التأكد من وجود التذكرة
+        // --------------------------------------------------
+
+        if (
+          [
+            "ticket_claim",
+            "ticket_unclaim",
+            "ticket_lock",
+            "ticket_unlock",
+            "ticket_close",
+            "ticket_close_confirm",
+            "ticket_close_cancel",
+            "ticket_delete",
+            "ticket_delete_confirm",
+            "ticket_delete_cancel"
+          ].includes(
+            interaction.customId
+          ) &&
+          !ticket
+        ) {
+
+          return interaction.reply({
+
+            content:
+              "❌ بيانات التذكرة غير موجودة.",
+
+            ephemeral: true
+
+          });
+
+        }
 
         // ==================================================
         // CLAIM
@@ -2731,19 +3594,13 @@ client.on(
           interaction.customId ===
           "ticket_claim"
         ) {
-          if (!ticket) {
-            return interaction.reply({
-              content:
-                "❌ التذكرة غير مسجلة.",
-              ephemeral: true
-            });
-          }
 
-          return claimTicket(
+          return await claimTicket(
             interaction,
             ticket,
             settings
           );
+
         }
 
         // ==================================================
@@ -2754,19 +3611,13 @@ client.on(
           interaction.customId ===
           "ticket_unclaim"
         ) {
-          if (!ticket) {
-            return interaction.reply({
-              content:
-                "❌ التذكرة غير مسجلة.",
-              ephemeral: true
-            });
-          }
 
-          return unclaimTicket(
+          return await unclaimTicket(
             interaction,
             ticket,
             settings
           );
+
         }
 
         // ==================================================
@@ -2777,20 +3628,32 @@ client.on(
           interaction.customId ===
           "ticket_lock"
         ) {
-          if (!ticket) {
-            return interaction.reply({
-              content:
-                "❌ التذكرة غير مسجلة.",
-              ephemeral: true
-            });
-          }
 
-          return lockTicket(
+          return await lockTicket(
             interaction,
             ticket,
             settings,
-            !ticket.locked
+            true
           );
+
+        }
+
+        // ==================================================
+        // UNLOCK
+        // ==================================================
+
+        if (
+          interaction.customId ===
+          "ticket_unlock"
+        ) {
+
+          return await lockTicket(
+            interaction,
+            ticket,
+            settings,
+            false
+          );
+
         }
 
         // ==================================================
@@ -2801,34 +3664,13 @@ client.on(
           interaction.customId ===
           "ticket_close"
         ) {
-          if (!ticket) {
-            return interaction.reply({
-              content:
-                "❌ التذكرة غير مسجلة.",
-              ephemeral: true
-            });
-          }
 
-          return requestClose(
+          return await requestClose(
             interaction,
             ticket,
             settings
           );
-        }
 
-        // ==================================================
-        // CLOSE CANCEL
-        // ==================================================
-
-        if (
-          interaction.customId ===
-          "close_cancel"
-        ) {
-          return interaction.update({
-            content:
-              "❌ تم إلغاء الإغلاق.",
-            components: []
-          });
         }
 
         // ==================================================
@@ -2837,484 +3679,301 @@ client.on(
 
         if (
           interaction.customId ===
-          "close_confirm"
+          "ticket_close_confirm"
         ) {
-          if (!ticket) {
-            return interaction.update({
-              content:
-                "❌ التذكرة غير موجودة.",
-              components: []
-            });
-          }
-
-          if (
-            !canManageTicket(
-              interaction.member,
-              ticket,
-              settings
-            )
-          ) {
-            return interaction.update({
-              content:
-                "❌ لا تملك صلاحية إغلاق هذه التذكرة.",
-              components: []
-            });
-          }
 
           await interaction.update({
+
             content:
-              "⏳ جاري إغلاق التذكرة...",
+              "🔴 جاري إغلاق التذكرة...",
+
             components: []
+
           });
 
-          return actuallyClose(
+          return await actuallyClose(
             interaction,
             ticket,
             settings
           );
+
         }
 
         // ==================================================
-        // RATINGS
-        // ==================================================
-
-        if (
-          interaction.customId.startsWith(
-            "rating_"
-          )
-        ) {
-          const parts =
-            interaction.customId.split(
-              "_"
-            );
-
-          const rating =
-            Number(parts[1]);
-
-          const channelId =
-            parts.slice(2).join("_");
-
-          const ticket =
-            db.tickets[channelId];
-
-          if (!ticket) {
-            return interaction.reply({
-              content:
-                "❌ التذكرة غير موجودة.",
-              ephemeral: true
-            });
-          }
-
-          if (
-            ticket.userId !==
-            interaction.user.id
-          ) {
-            return interaction.reply({
-              content:
-                "❌ هذا التقييم لصاحب التذكرة فقط.",
-              ephemeral: true
-            });
-          }
-
-          if (ticket.rated) {
-            return interaction.reply({
-              content:
-                "❌ تم إرسال التقييم بالفعل.",
-              ephemeral: true
-            });
-          }
-
-          if (
-            !Number.isInteger(
-              rating
-            ) ||
-            rating < 1 ||
-            rating > 5
-          ) {
-            return interaction.reply({
-              content:
-                "❌ تقييم غير صالح.",
-              ephemeral: true
-            });
-          }
-
-          ticket.rating =
-            rating;
-
-          ticket.rated = true;
-
-          saveDB();
-
-          if (
-            ticket.claimedBy
-          ) {
-            addStat(
-              interaction.guild.id,
-              ticket.claimedBy,
-              "ratings"
-            );
-
-            addStat(
-              interaction.guild.id,
-              ticket.claimedBy,
-              "ratingSum",
-              rating
-            );
-          }
-
-          await interaction.update({
-            content:
-              `⭐ شكرًا لك! تم تسجيل تقييمك: ${stars(rating)} (${rating}/5)`,
-            embeds: [],
-            components: []
-          });
-
-          await sendLog(
-            interaction.guild,
-            settings,
-
-            new EmbedBuilder()
-              .setTitle(
-                "⭐ Ticket Rated"
-              )
-              .setDescription(
-                `التذكرة: <#${channelId}>\n` +
-                `التقييم: ${stars(rating)} (${rating}/5)\n` +
-                `بواسطة: <@${interaction.user.id}>`
-              )
-              .setTimestamp()
-          );
-
-          return;
-        }
-
-        // ==================================================
-        // APPLICATION OPEN
+        // CLOSE CANCEL
         // ==================================================
 
         if (
           interaction.customId ===
-          "application_open"
+          "ticket_close_cancel"
         ) {
-          const modal =
-            new ModalBuilder()
-              .setCustomId(
-                "application_modal"
-              )
-              .setTitle(
-                "📋 التقديم"
-              );
 
-          const name =
-            new TextInputBuilder()
-              .setCustomId(
-                "name"
-              )
-              .setLabel(
-                "اسمك / اسمك في السيرفر"
-              )
-              .setStyle(
-                TextInputStyle.Short
-              )
-              .setRequired(true)
-              .setMaxLength(100);
-
-          const experience =
-            new TextInputBuilder()
-              .setCustomId(
-                "experience"
-              )
-              .setLabel(
-                "خبرتك"
-              )
-              .setStyle(
-                TextInputStyle.Paragraph
-              )
-              .setRequired(true)
-              .setMaxLength(1000);
-
-          const reason =
-            new TextInputBuilder()
-              .setCustomId(
-                "reason"
-              )
-              .setLabel(
-                "لماذا تريد التقديم؟"
-              )
-              .setStyle(
-                TextInputStyle.Paragraph
-              )
-              .setRequired(true)
-              .setMaxLength(1000);
-
-          modal.addComponents(
-            new ActionRowBuilder().addComponents(
-              name
-            ),
-
-            new ActionRowBuilder().addComponents(
-              experience
-            ),
-
-            new ActionRowBuilder().addComponents(
-              reason
-            )
+          return await cancelClose(
+            interaction
           );
 
-          return interaction.showModal(
-            modal
-          );
         }
+
+        // ==================================================
+        // DELETE
+        // ==================================================
+
+        if (
+          interaction.customId ===
+          "ticket_delete"
+        ) {
+
+          return await confirmDelete(
+            interaction,
+            ticket,
+            settings
+          );
+
+        }
+
+        // ==================================================
+        // DELETE CONFIRM
+        // ==================================================
+
+        if (
+          interaction.customId ===
+          "ticket_delete_confirm"
+        ) {
+
+          return await deleteTicket(
+            interaction,
+            ticket,
+            settings
+          );
+
+        }
+
+        // ==================================================
+        // DELETE CANCEL
+        // ==================================================
+
+        if (
+          interaction.customId ===
+          "ticket_delete_cancel"
+        ) {
+
+          return await cancelDelete(
+            interaction
+          );
+
+        }
+
       }
 
       // ==================================================
-      // MODALS
+      // SLASH COMMANDS
       // ==================================================
 
       if (
-        interaction.isModalSubmit()
+        interaction.isChatInputCommand()
       ) {
+
+        const command =
+          interaction.commandName;
+
+        const settings =
+          getGuild(
+            interaction.guild.id
+          );
+
         // ==================================================
-        // PANEL EDIT
+        // /PANEL
         // ==================================================
 
         if (
-          interaction.customId ===
-          "panel_edit_modal"
+          command ===
+          "panel"
         ) {
-          if (
-            !isServerManager(
-              interaction.member
-            )
-          ) {
-            return interaction.reply({
-              content:
-                "❌ لا تملك الصلاحية.",
-              ephemeral: true
-            });
-          }
 
-          const settings =
-            getGuild(
-              interaction.guild.id
-            );
-
-          settings.panel.title =
-            interaction.fields.getTextInputValue(
-              "title"
-            );
-
-          settings.panel.description =
-            interaction.fields.getTextInputValue(
-              "description"
-            );
-
-          settings.panel.buttonText =
-            interaction.fields.getTextInputValue(
-              "button"
-            );
-
-          const color =
-            interaction.fields.getTextInputValue(
-              "color"
-            );
-
-          if (
-            /^#[0-9A-Fa-f]{6}$/.test(
-              color
-            )
-          ) {
-            settings.panel.color =
-              color;
-          }
-
-          settings.panel.footer =
-            interaction.fields.getTextInputValue(
-              "footer"
+          const channel =
+            interaction.options.getChannel(
+              "channel"
             ) ||
-            "نظام التذاكر";
+            interaction.channel;
 
-          saveDB();
+          await channel.send({
 
-          let updated = false;
+            embeds: [
+              panelEmbed(settings)
+            ],
 
-          if (
-            settings.panelChannel &&
-            settings.panelMessage
-          ) {
-            const channel =
-              interaction.guild.channels.cache.get(
-                settings.panelChannel
-              );
+            components: [
+              panelRow(settings)
+            ]
 
-            if (
-              channel &&
-              channel.isTextBased()
-            ) {
-              const message =
-                await channel.messages
-                  .fetch(
-                    settings.panelMessage
-                  )
-                  .catch(() => null);
-
-              if (message) {
-                await message
-                  .edit({
-                    embeds: [
-                      panelEmbed(
-                        settings
-                      )
-                    ],
-                    components: [
-                      panelRow(
-                        settings
-                      )
-                    ]
-                  })
-                  .catch(() => {});
-
-                updated = true;
-              }
-            }
-          }
+          });
 
           return interaction.reply({
-            content: updated
-              ? "✅ تم تعديل الـPanel وتحديث الرسالة القديمة."
-              : "✅ تم حفظ التعديلات. استخدم `/panel` لإرسال Panel جديد.",
+
+            content:
+              `✅ تم إرسال لوحة التذاكر في ${channel}.`,
+
             ephemeral: true
+
           });
+
         }
 
         // ==================================================
-        // APPLICATION
+        // /STATS
         // ==================================================
 
         if (
-          interaction.customId ===
-          "application_modal"
+          command ===
+          "stats"
         ) {
-          const settings =
-            getGuild(
-              interaction.guild.id
-            );
 
-          const application = {
-            id:
-              `${interaction.guild.id}-${interaction.user.id}-${Date.now()}`,
+          const member =
+            interaction.options.getMember(
+              "member"
+            ) ||
+            interaction.member;
 
-            guildId:
-              interaction.guild.id,
+          const stats =
+            settings.staff[
+              member.id
+            ] || {
 
-            userId:
-              interaction.user.id,
+              claimed: 0,
+              closed: 0,
+              ratings: 0,
+              ratingSum: 0
 
-            name:
-              interaction.fields.getTextInputValue(
-                "name"
-              ),
+            };
 
-            experience:
-              interaction.fields.getTextInputValue(
-                "experience"
-              ),
-
-            reason:
-              interaction.fields.getTextInputValue(
-                "reason"
-              ),
-
-            createdAt:
-              Date.now()
-          };
-
-          db.applications[
-            application.id
-          ] = application;
-
-          saveDB();
-
-          const target =
-            settings.applicationChannel
-              ? interaction.guild.channels.cache.get(
-                  settings.applicationChannel
-                )
-              : null;
-
-          if (
-            target &&
-            target.isTextBased()
-          ) {
-            await target.send({
-              embeds: [
-                new EmbedBuilder()
-                  .setTitle(
-                    "📋 تقديم جديد"
-                  )
-                  .setDescription(
-                    `👤 المتقدم: <@${interaction.user.id}>`
-                  )
-                  .addFields(
-                    {
-                      name: "الاسم",
-                      value:
-                        safeText(
-                          application.name
-                        ),
-                      inline: false
-                    },
-
-                    {
-                      name: "الخبرة",
-                      value:
-                        safeText(
-                          application.experience
-                        ),
-                      inline: false
-                    },
-
-                    {
-                      name:
-                        "سبب التقديم",
-                      value:
-                        safeText(
-                          application.reason
-                        ),
-                      inline: false
-                    }
-                  )
-                  .setTimestamp()
-              ]
-            });
-          }
+          const average =
+            stats.ratings
+              ? (
+                  stats.ratingSum /
+                  stats.ratings
+                ).toFixed(2)
+              : "لا يوجد";
 
           return interaction.reply({
-            content:
-              "✅ تم إرسال تقديمك بنجاح.",
+
+            embeds: [
+
+              new EmbedBuilder()
+
+                .setTitle(
+                  "📊 إحصائيات الموظف"
+                )
+
+                .setColor(
+                  "#5865F2"
+                )
+
+                .setDescription(
+                  `${member}`
+                )
+
+                .addFields(
+
+                  {
+                    name:
+                      "🙋 التذاكر المستلمة",
+
+                    value:
+                      String(
+                        stats.claimed || 0
+                      ),
+
+                    inline: true
+                  },
+
+                  {
+                    name:
+                      "🔴 التذاكر المغلقة",
+
+                    value:
+                      String(
+                        stats.closed || 0
+                      ),
+
+                    inline: true
+                  },
+
+                  {
+                    name:
+                      "⭐ عدد التقييمات",
+
+                    value:
+                      String(
+                        stats.ratings || 0
+                      ),
+
+                    inline: true
+                  },
+
+                  {
+                    name:
+                      "⭐ المتوسط",
+
+                    value:
+                      average,
+
+                    inline: true
+                  }
+
+                )
+
+                .setTimestamp()
+
+            ],
+
             ephemeral: true
+
           });
+
         }
+
       }
+
     } catch (error) {
+
       console.error(
-        "❌ Interaction error:",
+        "❌ Interaction Error:",
         error
       );
 
-      if (
-        !interaction.replied &&
-        !interaction.deferred
-      ) {
-        await interaction
-          .reply({
+      try {
+
+        if (
+          interaction.replied ||
+          interaction.deferred
+        ) {
+
+          await interaction.followUp({
+
             content:
-              "❌ حدث خطأ غير متوقع.",
+              "❌ حدث خطأ أثناء تنفيذ الأمر.",
+
             ephemeral: true
-          })
-          .catch(() => {});
-      }
+
+          });
+
+        } else {
+
+          await interaction.reply({
+
+            content:
+              "❌ حدث خطأ أثناء تنفيذ الأمر.",
+
+            ephemeral: true
+
+          });
+
+        }
+
+      } catch {}
+
     }
+
   }
 );
 
@@ -3325,7 +3984,13 @@ client.on(
 client.on(
   "messageCreate",
   async message => {
+
     try {
+
+      // --------------------------------------------------
+      // تجاهل البوتات والـDM
+      // --------------------------------------------------
+
       if (
         message.author.bot ||
         !message.guild
@@ -3336,180 +4001,680 @@ client.on(
       const content =
         message.content.trim();
 
+      if (!content) {
+        return;
+      }
+
       const settings =
         getGuild(
           message.guild.id
         );
 
-      const aliases = {
-        "$قفل": "lock",
-        "$lock": "lock",
-
-        "$فتح": "unlock",
-        "$unlock": "unlock",
-
-        "$close": "close",
-
-        "$delete": "delete",
-        "$حذف": "delete",
-        "$مسح": "delete"
-      };
-
       // ==================================================
-      // $وقتي
+      // $DM
       // ==================================================
 
       if (
-        content === "$وقتي"
+        content === "$dm" ||
+        content.startsWith("$dm ")
       ) {
-        const ticket =
-          db.tickets[
-            message.channel.id
-          ];
+
+        // ----------------------------------------------
+        // الصلاحية
+        // ----------------------------------------------
 
         if (
-          !ticket ||
-          ticket.userId !==
-            message.author.id
+          staffLevel(
+            message.member,
+            settings
+          ) < 1 &&
+          !isServerManager(
+            message.member
+          )
         ) {
-          return;
+
+          return message.reply(
+            "❌ ليس لديك صلاحية استخدام هذا الأمر."
+          );
+
         }
 
-        const claim =
-          ticket.claimedBy
-            ? `<@${ticket.claimedBy}>`
-            : "غير مستلمة";
+        const target =
+          message.mentions.users.first();
 
-        let status =
-          "🟢 مفتوحة";
+        if (!target) {
 
-        if (
-          ticket.status ===
-          "locked"
-        ) {
-          status =
-            "🔒 مقفلة";
+          return message.reply(
+            "❌ الاستخدام:\n`$dm @العضو الرسالة`"
+          );
+
         }
 
-        if (
-          ticket.status ===
-          "closed_waiting_rating"
-        ) {
-          status =
-            "⭐ بانتظار التقييم";
+        // ----------------------------------------------
+        // إزالة الأمر والمنشن
+        // ----------------------------------------------
+
+        let text =
+          content
+            .replace(
+              /^\$dm\s*/i,
+              ""
+            )
+            .replace(
+              `<@${target.id}>`,
+              ""
+            )
+            .replace(
+              `<@!${target.id}>`,
+              ""
+            )
+            .trim();
+
+        if (!text) {
+
+          return message.reply(
+            "❌ اكتب الرسالة بعد المنشن."
+          );
+
         }
 
-        return message.reply(
-          `🎫 التذكرة: ${message.channel}\n` +
-          `📥 المستلم: ${claim}\n` +
-          `📌 الحالة: ${status}`
-        );
-      }
+        // ----------------------------------------------
+        // إرسال DM
+        // ----------------------------------------------
 
-      const action =
-        aliases[content];
+        try {
 
-      if (!action) {
+          await target.send({
+
+            content:
+              `<@${target.id}>\n${text}`
+
+          });
+
+          await message.reply(
+            `✅ تم إرسال الرسالة إلى ${target}.`
+          );
+
+        } catch {
+
+          await message.reply(
+            "❌ لا يمكن إرسال رسالة خاصة لهذا العضو."
+          );
+
+        }
+
         return;
       }
 
-      const ticket =
-        db.tickets[
-          message.channel.id
-        ];
-
-      if (!ticket) {
-        return message.reply(
-          "❌ هذا الروم ليس تذكرة."
-        );
-      }
-
       // ==================================================
-      // PREFIX FAKE INTERACTION
+      // $DMS
       // ==================================================
 
-      const fakeInteraction = {
-        guild:
-          message.guild,
+      if (
+        content === "$dms" ||
+        content.startsWith("$dms ")
+      ) {
 
-        channel:
-          message.channel,
+        // ----------------------------------------------
+        // Manager فقط
+        // ----------------------------------------------
 
-        member:
-          message.member,
+        if (
+          !isServerManager(
+            message.member
+          )
+        ) {
 
-        user:
-          message.author,
-
-        replied: false,
-
-        deferred: false,
-
-        isButton: () =>
-          false,
-
-        reply: async payload => {
           return message.reply(
-            payload
+            "❌ هذا الأمر للإدارة فقط."
           );
-        },
 
-        followUp: async payload => {
-          return message.reply(
-            payload
-          );
         }
-      };
 
-      if (
-        action === "lock"
-      ) {
-        return lockTicket(
-          fakeInteraction,
-          ticket,
-          settings,
-          true
+        let text =
+          content
+            .replace(
+              /^\$dms\s*/i,
+              ""
+            )
+            .trim();
+
+        if (!text) {
+
+          return message.reply(
+            "❌ الاستخدام:\n`$dms الرسالة`"
+          );
+
+        }
+
+        // ----------------------------------------------
+        // جلب الأعضاء
+        // ----------------------------------------------
+
+        let members;
+
+        try {
+
+          members =
+            await message.guild.members.fetch();
+
+        } catch {
+
+          return message.reply(
+            "❌ تعذر جلب أعضاء السيرفر."
+          );
+
+        }
+
+        // ----------------------------------------------
+        // بداية الإرسال
+        // ----------------------------------------------
+
+        await message.reply(
+          "📨 جاري إرسال الرسالة للأعضاء..."
         );
+
+        let sent = 0;
+        let failed = 0;
+
+        for (
+          const member of members.values()
+        ) {
+
+          // تجاهل البوتات
+          if (
+            member.user.bot
+          ) {
+            continue;
+          }
+
+          try {
+
+            await member.send({
+
+              content:
+                `<@${member.id}>\n${text}`
+
+            });
+
+            sent++;
+
+          } catch {
+
+            failed++;
+
+          }
+
+          // --------------------------------------------
+          // تأخير بسيط لتقليل Rate Limit
+          // --------------------------------------------
+
+          await new Promise(
+            resolve =>
+              setTimeout(
+                resolve,
+                250
+              )
+          );
+
+        }
+
+        return message.channel.send({
+
+          embeds: [
+
+            new EmbedBuilder()
+
+              .setTitle(
+                "📨 تم الانتهاء"
+              )
+
+              .setColor(
+                "#57F287"
+              )
+
+              .addFields(
+
+                {
+                  name:
+                    "✅ تم الإرسال",
+
+                  value:
+                    String(sent),
+
+                  inline: true
+                },
+
+                {
+                  name:
+                    "❌ فشل الإرسال",
+
+                  value:
+                    String(failed),
+
+                  inline: true
+                }
+
+              )
+
+              .setTimestamp()
+
+          ]
+
+        });
+
       }
 
-      if (
-        action === "unlock"
-      ) {
-        return lockTicket(
-          fakeInteraction,
-          ticket,
-          settings,
-          false
-        );
-      }
+      // ==================================================
+      // $COME
+      // ==================================================
 
       if (
-        action === "close"
+        content === "$come" ||
+        content.startsWith("$come ")
       ) {
-        return requestClose(
-          fakeInteraction,
-          ticket,
-          settings
-        );
-      }
+
+        // ----------------------------------------------
+        // الصلاحية
+        // ----------------------------------------------
+
+        if (
+          staffLevel(
+            message.member,
+            settings
+          ) < 1 &&
+          !isServerManager(
+            message.member
+          )
+        ) {
+
+          return message.reply(
+            "❌ ليس لديك صلاحية استخدام هذا الأمر."
+          );
+
+        }
+
+        // ----------------------------------------------
+        // Target
+        // ----------------------------------------------
+
+        const target =
+          message.mentions.users.first();
+
+        if (!target) {
+
+          return message.reply(
+            "❌ الاستخدام:\n`$come @العضو الرسالة`"
+          );
+
+        }
+
+        // ----------------------------------------------
+        // الرسالة الإضافية
+        // ----------------------------------------------
+
+        let customMessage =
+          content
+            .replace(
+              /^\$come\s*/i,
+              ""
+            )
+            .replace(
+              `<@${target.id}>`,
+              ""
+            )
+            .replace(
+              `<@!${target.id}>`,
+              ""
+            )
+            .trim();
+
+        // ----------------------------------------------
+        // مكان الأمر
+        // ----------------------------------------------
+
+        const channel =
+          message.channel;
+
+        // ----------------------------------------------
+        // هل هو Ticket؟
+        // ----------------------------------------------
+
+        const ticket =
+          db.tickets[
+            channel.id
+          ];
+
+        const isTicket =
+          Boolean(
+            ticket &&
+            ticket.guildId ===
+              message.guild.id
+          );
+
+        const placeName =
+          isTicket
+            ? "التذكرة"
+            : "الشات";
+
+        // ----------------------------------------------
+        // رابط مباشر للروم
+        // ----------------------------------------------
+
+        const channelUrl =
+          `https://discord.com/channels/` +
+          `${message.guild.id}/` +
+          `${channel.id}`;
+
+        // ----------------------------------------------
+        // Embed
+        // ----------------------------------------------
+
+        const comeEmbed =
+          new EmbedBuilder()
+
+            .setTitle(
+              "📢 تم استدعاؤك"
+            )
+
+            .setDescription(
+
+              `أهلًا <@${target.id}> 👋\n\n` +
+
+              `تم استدعاؤك إلى **${placeName}** في سيرفر **${message.guild.name}**.\n\n` +
+
+              (
+                customMessage
+                  ? `💬 **الرسالة:**\n${customMessage}\n\n`
+                  : ""
+              ) +
+
+              `اضغط الزر بالأسفل للانتقال مباشرة إلى ${placeName}.`
+
+            )
+
+            .setColor(
+              "#5865F2"
+            )
+
+            .addFields(
+
+              {
+                name:
+                  "📍 المكان",
+
+                value:
+                  `${channel}`,
+
+                inline: true
+              },
+
+              {
+                name:
+                  "👤 بواسطة",
+
+                value:
+                  `${message.author}`,
+
+                inline: true
+              }
+
+            )
+
+            .setTimestamp();
+
+        // ----------------------------------------------
+        // زر الانتقال
+        // ----------------------------------------------
+
+        const row =
+          new ActionRowBuilder()
+            .addComponents(
+
+              new ButtonBuilder()
+
+                .setLabel(
+                  `الانتقال إلى ${placeName}`
+                )
+
+                .setEmoji(
+                  isTicket
+                    ? "🎫"
+                    : "💬"
+                )
+
+                .setStyle(
+                  ButtonStyle.Link
+                  // ----------------------------------------------
+// إرسال DM
+// ----------------------------------------------
+
+try {
+
+  await target.send({
+
+    content:
+      `<@${target.id}>`,
+
+    embeds: [
+      comeEmbed
+    ],
+
+    components: [
+      row
+    ]
+
+  });
+
+  await message.reply(
+    `✅ تم استدعاء ${target} وإرسال رابط ${placeName} في الخاص.`
+  );
+
+} catch {
+
+  await message.reply(
+    "❌ لا يمكن إرسال رسالة خاصة لهذا العضو."
+  );
+
+}
+
+return;
+}
+
+// ==================================================
+// ALIASES
+// ==================================================
+
+const aliases = {
+
+  "$قفل":
+    "lock",
+
+  "$lock":
+    "lock",
+
+  "$فتح":
+    "unlock",
+
+  "$unlock":
+    "unlock",
+
+  "$close":
+    "close",
+
+  "$اغلاق":
+    "close",
+
+  "$حذف":
+    "delete",
+
+  "$مسح":
+    "delete",
+
+  "$delete":
+    "delete"
+
+};
+
+const command =
+  aliases[content];
+
+if (!command) {
+  return;
+}
+
+// ==================================================
+// TICKET
+// ==================================================
+
+const ticket =
+  db.tickets[
+    message.channel.id
+  ];
+
+if (!ticket) {
+
+  return message.reply(
+    "❌ هذا الأمر يعمل داخل التذكرة فقط."
+  );
+
+}
+
+// ==================================================
+// FAKE INTERACTION
+// ==================================================
+
+const fakeInteraction = {
+
+  guild:
+    message.guild,
+
+  channel:
+    message.channel,
+
+  member:
+    message.member,
+
+  user:
+    message.author,
+
+  replied:
+    false,
+
+  deferred:
+    false,
+
+  reply:
+    async data => {
 
       if (
-        action === "delete"
+        typeof data ===
+        "string"
       ) {
-        return deleteTicket(
-          fakeInteraction,
-          ticket,
-          settings
+
+        return message.reply(
+          data
         );
+
       }
-    } catch (error) {
-      console.error(
-        "❌ Message command error:",
-        error
+
+      return message.reply(
+        data.content || ""
       );
+
+    },
+
+  update:
+    async data => {
+
+      return message.reply(
+        data.content || ""
+      );
+
     }
-  }
-);
+
+};
+
+// ==================================================
+// LOCK
+// ==================================================
+
+if (
+  command ===
+  "lock"
+) {
+
+  return await lockTicket(
+    fakeInteraction,
+    ticket,
+    settings,
+    true
+  );
+
+}
+
+// ==================================================
+// UNLOCK
+// ==================================================
+
+if (
+  command ===
+  "unlock"
+) {
+
+  return await lockTicket(
+    fakeInteraction,
+    ticket,
+    settings,
+    false
+  );
+
+}
+
+// ==================================================
+// CLOSE
+// ==================================================
+
+if (
+  command ===
+  "close"
+) {
+
+  return await actuallyClose(
+    fakeInteraction,
+    ticket,
+    settings
+  );
+
+}
+
+// ==================================================
+// DELETE
+// ==================================================
+
+if (
+  command ===
+  "delete"
+) {
+
+  return await deleteTicket(
+    fakeInteraction,
+    ticket,
+    settings
+  );
+
+}
+
+} catch (error) {
+
+  console.error(
+    "❌ Message Error:",
+    error
+  );
+
+}
+
+});
 
 // ==================================================
 // READY
@@ -3517,17 +4682,18 @@ client.on(
 
 client.once(
   "ready",
-  () => {
+  async () => {
+
     console.log(
       "=========================================="
     );
 
     console.log(
-      `🤖 ${client.user.tag} is online.`
+      `✅ Logged in as ${client.user.tag}`
     );
 
     console.log(
-      `🆔 Client ID: ${client.user.id}`
+      `🆔 Bot ID: ${client.user.id}`
     );
 
     console.log(
@@ -3535,71 +4701,24 @@ client.once(
     );
 
     console.log(
-      "🎫 Ticket System: ONLINE"
-    );
-
-    console.log(
-      "⭐ Rating System: ONLINE"
-    );
-
-    console.log(
-      "🗃️ Transcript System: ONLINE"
-    );
-
-    console.log(
       "=========================================="
     );
+
+    client.user.setActivity(
+      "KRX Tickets",
+      {
+        type: 3
+      }
+    );
+
   }
 );
 
 // ==================================================
-// ERROR EVENTS
+// LOGIN
 // ==================================================
 
-client.on(
-  "error",
-  error => {
-    console.error(
-      "❌ Discord Client Error:",
-      error
-    );
-  }
+client.login(
+  TOKEN
 );
-
-client.on(
-  "warn",
-  warning => {
-    console.warn(
-      "⚠️ Discord Warning:",
-      warning
-    );
-});
-
-// ==================================================
-// START BOT
-// ==================================================
-
-(async () => {
-  try {
-    console.log(
-      "🚀 Starting bot..."
-    );
-
-    await registerCommands();
-
-    console.log(
-      "🔐 Logging into Discord..."
-    );
-
-    await client.login(
-      TOKEN
-    );
-  } catch (error) {
-    console.error(
-      "❌ Startup error:",
-      error
-    );
-
-    process.exit(1);
-  }
-})();
+                
