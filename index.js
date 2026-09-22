@@ -4423,7 +4423,7 @@ client.on(
 
             .setTimestamp();
 
-        // ----------------------------------------------
+                // ----------------------------------------------
         // زر الانتقال
         // ----------------------------------------------
 
@@ -4445,41 +4445,49 @@ client.on(
 
                 .setStyle(
                   ButtonStyle.Link
-                  // ----------------------------------------------
-// إرسال DM
-// ----------------------------------------------
+                )
 
-try {
+                .setURL(
+                  channelUrl
+                )
 
-  await target.send({
+            );
 
-    content:
-      `<@${target.id}>`,
+        // ----------------------------------------------
+        // إرسال DM
+        // ----------------------------------------------
 
-    embeds: [
-      comeEmbed
-    ],
+        try {
 
-    components: [
-      row
-    ]
+          await target.send({
 
-  });
+            content:
+              `<@${target.id}>`,
 
-  await message.reply(
-    `✅ تم استدعاء ${target} وإرسال رابط ${placeName} في الخاص.`
-  );
+            embeds: [
+              comeEmbed
+            ],
 
-} catch {
+            components: [
+              row
+            ]
 
-  await message.reply(
-    "❌ لا يمكن إرسال رسالة خاصة لهذا العضو."
-  );
+          });
 
-}
+          await message.reply(
+            `✅ تم استدعاء ${target} وإرسال رابط ${placeName} في الخاص.`
+          );
 
-return;
-}
+        } catch {
+
+          await message.reply(
+            "❌ لا يمكن إرسال رسالة خاصة لهذا العضو."
+          );
+
+        }
+
+        return;
+      }
 
 // ==================================================
 // ALIASES
