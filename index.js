@@ -17,6 +17,7 @@ const {
 
 const fs = require("fs");
 const path = require("path");
+const sharp = require("sharp");
 
 // ==================================================
 // TOKEN
@@ -201,14 +202,15 @@ function zenixCaptchaSvg(code) {
 </svg>`;
 }
 
-function createZenixCaptcha() {
+async function createZenixCaptcha() {
   const code = String(Math.floor(100000 + Math.random() * 900000));
+  const png = await sharp(Buffer.from(zenixCaptchaSvg(code), "utf8"))
+    .png()
+    .toBuffer();
+
   return {
     code,
-    attachment: new AttachmentBuilder(
-      Buffer.from(zenixCaptchaSvg(code), "utf8"),
-      { name: "zenix-captcha.svg" }
-    )
+    attachment: new AttachmentBuilder(png, { name: "zenix-captcha.png" })
   };
 }
 
@@ -5172,7 +5174,7 @@ client.on(
           return message.reply(`❌ رصيدك غير كافٍ.\nرصيدك: **${formatZenix(balance)}**`);
         }
 
-        const captcha = createZenixCaptcha();
+        const captcha = await createZenixCaptcha();
         pendingZenixTransfers.set(zenixKey, {
           code: captcha.code,
           targetId: target.id,
@@ -5189,7 +5191,7 @@ client.on(
             "اكتب **الأرقام الظاهرة في الصورة** في نفس الشات خلال **90 ثانية**.\n" +
             "لإلغاء العملية اكتب: `$الغاء`"
           )
-          .setImage("attachment://zenix-captcha.svg")
+          .setImage("attachment://zenix-captcha.png")
           .addFields(
             { name: "💳 رصيدك قبل التحويل", value: formatZenix(balance), inline: true },
             { name: "📥 المستلم", value: `${target}`, inline: true }
