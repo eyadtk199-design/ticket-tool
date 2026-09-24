@@ -21,7 +21,7 @@ const path = require("path");
 // TOKEN
 // ==================================================
 
-const TOKEN = process.env.TOKEN;
+const TOKEN = process.env.DISCORD_TOKEN || process.env.TOKEN;
 
 if (!TOKEN) {
   console.error("❌ TOKEN غير موجود في Environment Variables");
@@ -58,7 +58,9 @@ const DB_FILE = path.join(
 let db = {
   guilds: {},
   tickets: {},
-  applications: {}
+  applications: {},
+  warnings: {},
+  jails: {}
 };
 
 // ==================================================
@@ -82,6 +84,8 @@ function loadDB() {
     db.guilds ||= {};
     db.tickets ||= {};
     db.applications ||= {};
+    db.warnings ||= {};
+    db.jails ||= {};
 
   } catch (error) {
     console.error(
@@ -182,7 +186,7 @@ function getGuild(guildId) {
 
       maxTickets: 1,
 
-      requireRating: false,
+      requireRating: true,
 
       panel: {
         ...DEFAULT_PANEL
@@ -194,7 +198,33 @@ function getGuild(guildId) {
     saveDB();
   }
 
-  return db.guilds[guildId];
+  const settings = db.guilds[guildId];
+
+  // Migration for older database versions.
+  settings.juniorRole ??= null;
+  settings.middleRole ??= null;
+  settings.seniorRole ??= null;
+  settings.ownerRole ??= null;
+  settings.jailRole ??= null;
+  settings.category ??= null;
+  settings.logsChannel ??= null;
+  settings.archiveChannel ??= null;
+  settings.applicationChannel ??= null;
+  settings.mentionRole ??= null;
+  settings.panelChannel ??= null;
+  settings.panelMessage ??= null;
+  settings.maxTickets ??= 1;
+  settings.requireRating ??= true;
+  settings.panel = {
+    ...DEFAULT_PANEL,
+    ...(settings.panel || {})
+  };
+  settings.staff ||= {};
+  db.warnings ||= {};
+  db.jails ||= {};
+  db.guilds[guildId] = settings;
+
+  return settings;
 }
 
 // ==================================================
@@ -228,6 +258,169 @@ function stars(number) {
       )
     )
   );
+}
+
+
+
+async function resolveRole(guild, token) {
+  if (!token) return null;
+  const clean = String(token).replace(/[<@&>]/g, "").trim();
+  if (/^\d{15,25}$/.test(clean)) {
+    return guild.roles.cache.get(clean) || null;
+  }
+  return guild.roles.cache.find(r => r.name.toLowerCase() === clean.toLowerCase()) || null;
+}
+
+// ==================================================
+// GENERAL HELPERS / MODERATION
+// ==================================================
+
+function parseDuration(input) {
+  if (!input) return null;
+
+  const value = String(input).trim().toLowerCase();
+  const match = value.match(/^(\d+(?:\.\d+)?)(s|m|h|d|w|ث|د|س|ي|اسبوع|أسبوع)$/i);
+  if (!match) return null;
+
+  const amount = Number(match[1]);
+  const unit = match[2];
+
+  const multipliers = {
+    s: 1000,
+    m: 60 * 1000,
+    h: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000,
+    w: 7 * 24 * 60 * 60 * 1000,
+    ث: 1000,
+    د: 60 * 1000,
+    س: 60 * 60 * 1000,
+    ي: 24 * 60 * 60 * 1000,
+    اسبوع: 7 * 24 * 60 * 60 * 1000,
+    "أسبوع": 7 * 24 * 60 * 60 * 1000
+  };
+
+  const ms = amount * multipliers[unit];
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  return Math.floor(ms);
+}
+
+function formatDuration(ms) {
+  if (!ms) return "دائم";
+  let seconds = Math.floor(ms / 1000);
+  const days = Math.floor(seconds / 86400);
+  seconds %= 86400;
+  const hours = Math.floor(seconds / 3600);
+  seconds %= 3600;
+  const minutes = Math.floor(seconds / 60);
+  seconds %= 60;
+
+  const parts = [];
+  if (days) parts.push(`${days} يوم`);
+  if (hours) parts.push(`${hours} ساعة`);
+  if (minutes) parts.push(`${minutes} دقيقة`);
+  if (seconds && parts.length < 2) parts.push(`${seconds} ثانية`);
+  return parts.join(" و ") || "أقل من دقيقة";
+}
+
+async function resolveMember(guild, token) {
+  if (!token) return null;
+
+  const clean = String(token)
+    .replace(/[<@!>]/g, "")
+    .trim();
+
+  if (/^\d{15,25}$/.test(clean)) {
+    try {
+      return await guild.members.fetch(clean);
+    } catch {
+      return null;
+    }
+  }
+
+  const lower = clean.toLowerCase();
+  return guild.members.cache.find(m =>
+    m.user.username.toLowerCase() === lower ||
+    m.displayName.toLowerCase() === lower
+  ) || null;
+}
+
+function extractTargetAndArgs(content, commandNames) {
+  const pattern = new RegExp(
+    `^(?:${commandNames.map(x => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\s+`,
+    "i"
+  );
+
+  let rest = content.replace(pattern, "").trim();
+  const mention = rest.match(/^<@!?(\d+)>/);
+
+  let targetToken = null;
+  if (mention) {
+    targetToken = mention[1];
+    rest = rest.slice(mention[0].length).trim();
+  } else {
+    const first = rest.split(/\s+/)[0];
+    if (/^\d{15,25}$/.test(first)) {
+      targetToken = first;
+      rest = rest.slice(first.length).trim();
+    }
+  }
+
+  return {
+    targetToken,
+    rest,
+    args: rest ? rest.split(/\s+/) : []
+  };
+}
+
+function canModerateTarget(actor, target, settings, { allowMember = false } = {}) {
+  if (!actor || !target) return false;
+  if (actor.id === target.id) return false;
+  if (target.user?.bot && !allowMember) return false;
+
+  const actorLevel = staffLevel(actor, settings);
+  const targetLevel = staffLevel(target, settings);
+
+  // Server owner can manage configured staff, but not above Discord owner.
+  if (actor.guild.ownerId === actor.id) {
+    return target.id !== actor.guild.ownerId;
+  }
+
+  return actorLevel > targetLevel;
+}
+
+function warningKey(guildId, userId) {
+  return `${guildId}:${userId}`;
+}
+
+function getWarnings(guildId, userId) {
+  db.warnings ||= {};
+  const key = warningKey(guildId, userId);
+  db.warnings[key] ||= [];
+  return db.warnings[key];
+}
+
+function removeExpiredWarnings(guildId, userId) {
+  const list = getWarnings(guildId, userId);
+  const now = Date.now();
+  const active = list.filter(w => !w.expiresAt || w.expiresAt > now);
+  db.warnings[warningKey(guildId, userId)] = active;
+  return active;
+}
+
+async function sendModerationLog(guild, settings, title, color, fields) {
+  return sendLog(
+    guild,
+    settings,
+    new EmbedBuilder()
+      .setTitle(title)
+      .setColor(color)
+      .addFields(fields)
+      .setTimestamp()
+  );
+}
+
+function moderationUsage(command, example) {
+  return `❌ الاستخدام:\n\`${command} @العضو السبب المدة\`\nمثال: \`${example}\``;
 }
 
 // ==================================================
@@ -654,6 +847,20 @@ function ticketRow() {
         )
         .setEmoji(
           "🔴"
+        )
+        .setStyle(
+          ButtonStyle.Danger
+        ),
+
+      new ButtonBuilder()
+        .setCustomId(
+          "ticket_delete"
+        )
+        .setLabel(
+          "حذف"
+        )
+        .setEmoji(
+          "🗑️"
         )
         .setStyle(
           ButtonStyle.Danger
@@ -1214,7 +1421,7 @@ async function logTicketClosed(
           name:
             "⭐ التقييم",
           value:
-            "اختياري",
+            settings.requireRating ? "مطلوب قبل الحذف" : "اختياري",
           inline: true
         },
 
@@ -2367,7 +2574,7 @@ async function actuallyClose(
             .setDescription(
               `تم إغلاق تذكرتك في **${guild.name}**.\n\n` +
               `يمكنك تقييم الخدمة من 1 إلى 5 نجوم.\n\n` +
-              `⭐ **التقييم اختياري**`
+              `⭐ **التقييم مطلوب قبل حذف التذكرة**`
             )
 
             .setColor(
@@ -3201,6 +3408,21 @@ async function deleteTicket(
   }
 
   // ----------------------------------------------
+  // التقييم الإجباري
+  // ----------------------------------------------
+
+  if (
+    settings.requireRating &&
+    !ticket.rated
+  ) {
+    return interaction.reply({
+      content:
+        "⭐ يجب على صاحب التذكرة تقييم الخدمة قبل حذف التذكرة.",
+      ephemeral: true
+    });
+  }
+
+  // ----------------------------------------------
   // منع الحذف المتكرر
   // ----------------------------------------------
 
@@ -3467,6 +3689,262 @@ async function cancelDelete(
   });
 
         }
+
+// ==================================================
+// MODERATION COMMANDS
+// ==================================================
+
+async function executeWarn({ guild, settings, actor, target, reason, duration }) {
+  if (!target) return "❌ لم أجد العضو.";
+  if (!canModerateTarget(actor, target, settings)) {
+    return "❌ لا يمكنك تحذير عضو بنفس رتبتك أو أعلى.";
+  }
+
+  const list = removeExpiredWarnings(guild.id, target.id);
+  const expiresAt = duration ? Date.now() + duration : null;
+
+  list.push({
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    moderatorId: actor.id,
+    reason: reason || "بدون سبب",
+    createdAt: Date.now(),
+    expiresAt
+  });
+
+  db.warnings[warningKey(guild.id, target.id)] = list;
+  saveDB();
+
+  await sendModerationLog(
+    guild,
+    settings,
+    "⚠️ تحذير جديد",
+    "#FEE75C",
+    [
+      { name: "العضو", value: `${target}`, inline: true },
+      { name: "المشرف", value: `${actor}`, inline: true },
+      { name: "السبب", value: safeText(reason || "بدون سبب"), inline: false },
+      { name: "المدة", value: duration ? formatDuration(duration) : "دائم", inline: true },
+      { name: "عدد التحذيرات", value: String(list.length), inline: true }
+    ]
+  );
+
+  let autoTimeout = false;
+  if (list.length >= 3 && target.moderatable) {
+    try {
+      await target.timeout(30 * 60 * 1000, "الوصول إلى 3 تحذيرات");
+      autoTimeout = true;
+    } catch {}
+  }
+
+  return (
+    `⚠️ تم تحذير ${target}.\n` +
+    `السبب: **${safeText(reason || "بدون سبب")}**\n` +
+    `المدة: **${duration ? formatDuration(duration) : "دائم"}**\n` +
+    `التحذيرات النشطة: **${list.length}**` +
+    (autoTimeout ? "\n⏱️ تم تطبيق Timeout لمدة 30 دقيقة بسبب وصوله إلى 3 تحذيرات." : "")
+  );
+}
+
+async function executeTimeout({ guild, settings, actor, target, reason, duration }) {
+  if (!target) return "❌ لم أجد العضو.";
+  if (!canModerateTarget(actor, target, settings)) {
+    return "❌ لا يمكنك إعطاء Timeout لعضو بنفس رتبتك أو أعلى.";
+  }
+  if (!duration) return "❌ يجب تحديد مدة مثل `10m` أو `1h` أو `1d`.";
+  if (duration > 28 * 24 * 60 * 60 * 1000) {
+    return "❌ أقصى مدة للـTimeout هي 28 يومًا.";
+  }
+  if (!target.moderatable) return "❌ رتبة البوت لا تسمح له بتطبيق Timeout على هذا العضو.";
+
+  try {
+    await target.timeout(duration, reason || "بدون سبب");
+  } catch (error) {
+    console.error("Timeout error:", error);
+    return "❌ فشل تطبيق Timeout. تأكد من صلاحية Moderate Members وترتيب الرتب.";
+  }
+
+  await sendModerationLog(
+    guild,
+    settings,
+    "⏱️ Timeout",
+    "#ED4245",
+    [
+      { name: "العضو", value: `${target}`, inline: true },
+      { name: "المشرف", value: `${actor}`, inline: true },
+      { name: "المدة", value: formatDuration(duration), inline: true },
+      { name: "السبب", value: safeText(reason || "بدون سبب"), inline: false }
+    ]
+  );
+
+  return `⏱️ تم إعطاء ${target} Timeout لمدة **${formatDuration(duration)}**.\nالسبب: **${safeText(reason || "بدون سبب")}**`;
+}
+
+async function executeJail({ guild, settings, actor, target, reason, duration }) {
+  if (!target) return "❌ لم أجد العضو.";
+  if (staffLevel(actor, settings) < 3 && guild.ownerId !== actor.id) {
+    return "❌ السجن متاح للاستف العليا أو الأونر فقط.";
+  }
+  if (!canModerateTarget(actor, target, settings)) {
+    return "❌ لا يمكنك سجن عضو بنفس رتبتك أو أعلى.";
+  }
+  if (!settings.jailRole) {
+    return "❌ لم يتم تحديد رتبة السجن. استخدم `/setup-jail-role` أو `$setup-jail-role @role`.";
+  }
+  const role = guild.roles.cache.get(settings.jailRole);
+  if (!role) return "❌ رتبة السجن المحفوظة غير موجودة.";
+  if (!role.editable) return "❌ البوت لا يستطيع إعطاء رتبة السجن بسبب ترتيب الرتب.";
+
+  try {
+    await target.roles.add(role, reason || "بدون سبب");
+  } catch (error) {
+    console.error("Jail error:", error);
+    return "❌ فشل إعطاء رتبة السجن.";
+  }
+
+  const expiresAt = duration ? Date.now() + duration : null;
+  db.jails[warningKey(guild.id, target.id)] = {
+    guildId: guild.id,
+    userId: target.id,
+    roleId: role.id,
+    moderatorId: actor.id,
+    reason: reason || "بدون سبب",
+    jailedAt: Date.now(),
+    expiresAt
+  };
+  saveDB();
+
+  await sendModerationLog(
+    guild,
+    settings,
+    "🔒 سجن عضو",
+    "#ED4245",
+    [
+      { name: "العضو", value: `${target}`, inline: true },
+      { name: "المشرف", value: `${actor}`, inline: true },
+      { name: "المدة", value: duration ? formatDuration(duration) : "دائم", inline: true },
+      { name: "السبب", value: safeText(reason || "بدون سبب"), inline: false }
+    ]
+  );
+
+  if (duration) {
+    setTimeout(async () => {
+      const key = warningKey(guild.id, target.id);
+      const jail = db.jails[key];
+      if (!jail || jail.expiresAt !== expiresAt) return;
+
+      try {
+        const member = await guild.members.fetch(target.id);
+        if (member.roles.cache.has(role.id)) {
+          await member.roles.remove(role, "انتهاء مدة السجن");
+        }
+      } catch {}
+
+      delete db.jails[key];
+      saveDB();
+    }, Math.min(duration, 2147483647));
+  }
+
+  return `🔒 تم سجن ${target} لمدة **${duration ? formatDuration(duration) : "دائم"}**.\nالسبب: **${safeText(reason || "بدون سبب")}**`;
+}
+
+async function executeBan({ guild, settings, actor, target, reason }) {
+  if (!target) return "❌ لم أجد العضو.";
+  if (!canModerateTarget(actor, target, settings)) return "❌ لا يمكنك حظر عضو بنفس رتبتك أو أعلى.";
+  if (!target.bannable) return "❌ البوت لا يستطيع حظر هذا العضو.";
+
+  try {
+    await target.ban({ reason: reason || "بدون سبب", deleteMessageSeconds: 0 });
+  } catch {
+    return "❌ فشل الحظر. تأكد من صلاحية Ban Members وترتيب الرتب.";
+  }
+
+  await sendModerationLog(guild, settings, "🔨 حظر عضو", "#ED4245", [
+    { name: "العضو", value: `${target.user.tag} (${target.id})`, inline: true },
+    { name: "المشرف", value: `${actor}`, inline: true },
+    { name: "السبب", value: safeText(reason || "بدون سبب"), inline: false }
+  ]);
+
+  return `🔨 تم حظر **${target.user.tag}**.\nالسبب: **${safeText(reason || "بدون سبب")}**`;
+}
+
+async function executeKick({ guild, settings, actor, target, reason }) {
+  if (!target) return "❌ لم أجد العضو.";
+  if (!canModerateTarget(actor, target, settings)) return "❌ لا يمكنك طرد عضو بنفس رتبتك أو أعلى.";
+  if (!target.kickable) return "❌ البوت لا يستطيع طرد هذا العضو.";
+
+  try {
+    await target.kick(reason || "بدون سبب");
+  } catch {
+    return "❌ فشل الطرد. تأكد من صلاحية Kick Members وترتيب الرتب.";
+  }
+
+  await sendModerationLog(guild, settings, "👢 طرد عضو", "#ED4245", [
+    { name: "العضو", value: `${target.user.tag} (${target.id})`, inline: true },
+    { name: "المشرف", value: `${actor}`, inline: true },
+    { name: "السبب", value: safeText(reason || "بدون سبب"), inline: false }
+  ]);
+
+  return `👢 تم طرد **${target.user.tag}**.\nالسبب: **${safeText(reason || "بدون سبب")}**`;
+}
+
+async function executeUnban({ guild, settings, actor, userId, reason }) {
+  if (staffLevel(actor, settings) < 2 && !isServerManager(actor) && guild.ownerId !== actor.id) {
+    return "❌ ليس لديك صلاحية فك الحظر.";
+  }
+  if (!/^\d{15,25}$/.test(userId || "")) return "❌ اكتب ID العضو بعد الأمر.";
+
+  try {
+    await guild.bans.remove(userId, reason || "بدون سبب");
+  } catch {
+    return "❌ لم أستطع فك الحظر. تأكد من الـID وأن العضو محظور.";
+  }
+
+  await sendModerationLog(guild, settings, "🔓 فك حظر", "#57F287", [
+    { name: "العضو ID", value: userId, inline: true },
+    { name: "المشرف", value: `${actor}`, inline: true },
+    { name: "السبب", value: safeText(reason || "بدون سبب"), inline: false }
+  ]);
+
+  return `🔓 تم فك الحظر عن **${userId}**.`;
+}
+
+async function restoreJails() {
+  for (const [key, jail] of Object.entries(db.jails || {})) {
+    const guild = client.guilds.cache.get(jail.guildId);
+    if (!guild) continue;
+
+    if (jail.expiresAt && jail.expiresAt <= Date.now()) {
+      try {
+        const member = await guild.members.fetch(jail.userId);
+        const role = guild.roles.cache.get(jail.roleId);
+        if (role && member.roles.cache.has(role.id)) {
+          await member.roles.remove(role, "انتهاء مدة السجن");
+        }
+      } catch {}
+      delete db.jails[key];
+      continue;
+    }
+
+    if (jail.expiresAt) {
+      const delay = Math.min(jail.expiresAt - Date.now(), 2147483647);
+      setTimeout(async () => {
+        const current = db.jails[key];
+        if (!current || current.expiresAt !== jail.expiresAt) return;
+        try {
+          const member = await guild.members.fetch(jail.userId);
+          const role = guild.roles.cache.get(jail.roleId);
+          if (role && member.roles.cache.has(role.id)) {
+            await member.roles.remove(role, "انتهاء مدة السجن");
+          }
+        } catch {}
+        delete db.jails[key];
+        saveDB();
+      }, delay);
+    }
+  }
+  saveDB();
+}
+
 // ==================================================
 // INTERACTION HANDLER
 // ==================================================
@@ -3781,6 +4259,144 @@ client.on(
             interaction.guild.id
           );
 
+
+        // ==================================================
+        // MODERATION SLASH COMMANDS
+        // ==================================================
+
+        if (["warn", "timeout", "jail", "ban", "kick", "unban"].includes(command)) {
+          if (
+            staffLevel(interaction.member, settings) < 1 &&
+            !isServerManager(interaction.member) &&
+            interaction.guild.ownerId !== interaction.user.id
+          ) {
+            return interaction.reply({ content: "❌ ليس لديك صلاحية استخدام هذا الأمر.", ephemeral: true });
+          }
+
+          if (command === "unban") {
+            const result = await executeUnban({
+              guild: interaction.guild,
+              settings,
+              actor: interaction.member,
+              userId: interaction.options.getString("user_id"),
+              reason: interaction.options.getString("reason")
+            });
+            return interaction.reply({ content: result, ephemeral: true });
+          }
+
+          const user = interaction.options.getUser("member");
+          const target = await interaction.guild.members.fetch(user.id).catch(() => null);
+          if (!target) {
+            return interaction.reply({ content: "❌ تعذر جلب العضو من السيرفر.", ephemeral: true });
+          }
+
+          const reason = interaction.options.getString("reason") || "بدون سبب";
+          const durationText = interaction.options.getString("duration");
+          const duration = durationText ? parseDuration(durationText) : null;
+
+          if (durationText && !duration) {
+            return interaction.reply({
+              content: "❌ مدة غير صحيحة. أمثلة: `10m`، `2h`، `7d`.",
+              ephemeral: true
+            });
+          }
+
+          let result;
+          if (command === "warn") {
+            result = await executeWarn({ guild: interaction.guild, settings, actor: interaction.member, target, reason, duration });
+          } else if (command === "timeout") {
+            result = await executeTimeout({ guild: interaction.guild, settings, actor: interaction.member, target, reason, duration });
+          } else if (command === "jail") {
+            result = await executeJail({ guild: interaction.guild, settings, actor: interaction.member, target, reason, duration });
+          } else if (command === "ban") {
+            result = await executeBan({ guild: interaction.guild, settings, actor: interaction.member, target, reason });
+          } else {
+            result = await executeKick({ guild: interaction.guild, settings, actor: interaction.member, target, reason });
+          }
+
+          return interaction.reply({ content: result, ephemeral: false });
+        }
+
+        // ==================================================
+        // SETUP COMMANDS
+        // ==================================================
+
+        if ([
+          "setup-ticket-category",
+          "setup-logs",
+          "setup-archive",
+          "setup-application",
+          "setup-jail-role",
+          "staff-role",
+          "rating-required",
+          "max-tickets"
+        ].includes(command)) {
+
+          const manager =
+            isServerManager(interaction.member) ||
+            staffLevel(interaction.member, settings) >= 3 ||
+            interaction.guild.ownerId === interaction.user.id;
+
+          if (!manager) {
+            return interaction.reply({
+              content: "❌ هذا الأمر للإدارة العليا أو مالك السيرفر فقط.",
+              ephemeral: true
+            });
+          }
+
+          if (command === "setup-ticket-category") {
+            const category = interaction.options.getChannel("category");
+            if (category.type !== ChannelType.GuildCategory) {
+              return interaction.reply({ content: "❌ يجب اختيار Category.", ephemeral: true });
+            }
+            settings.category = category.id;
+          }
+
+          if (command === "setup-logs") {
+            const channel = interaction.options.getChannel("channel");
+            settings.logsChannel = channel.id;
+          }
+
+          if (command === "setup-archive") {
+            const channel = interaction.options.getChannel("channel");
+            settings.archiveChannel = channel.id;
+          }
+
+          if (command === "setup-application") {
+            const channel = interaction.options.getChannel("channel");
+            settings.applicationChannel = channel.id;
+          }
+
+          if (command === "setup-jail-role") {
+            const role = interaction.options.getRole("role");
+            if (role.id === interaction.guild.id) {
+              return interaction.reply({ content: "❌ لا يمكن اختيار @everyone.", ephemeral: true });
+            }
+            settings.jailRole = role.id;
+          }
+
+          if (command === "staff-role") {
+            const level = interaction.options.getString("level");
+            const role = interaction.options.getRole("role");
+            settings[`${level}Role`] = role.id;
+          }
+
+          if (command === "rating-required") {
+            settings.requireRating = interaction.options.getBoolean("enabled");
+          }
+
+          if (command === "max-tickets") {
+            settings.maxTickets = interaction.options.getInteger("amount");
+          }
+
+          saveDB();
+
+          return interaction.reply({
+            content: "✅ تم حفظ الإعداد بنجاح.",
+            ephemeral: true
+          });
+        }
+
         // ==================================================
         // /PANEL
         // ==================================================
@@ -3790,33 +4406,41 @@ client.on(
           "panel"
         ) {
 
+          if (
+            !isServerManager(interaction.member) &&
+            staffLevel(interaction.member, settings) < 3 &&
+            interaction.guild.ownerId !== interaction.user.id
+          ) {
+            return interaction.reply({
+              content: "❌ هذا الأمر للإدارة العليا أو إدارة السيرفر فقط.",
+              ephemeral: true
+            });
+          }
+
           const channel =
-            interaction.options.getChannel(
-              "channel"
-            ) ||
+            interaction.options.getChannel("channel") ||
             interaction.channel;
 
-          await channel.send({
+          if (channel.type !== ChannelType.GuildText) {
+            return interaction.reply({
+              content: "❌ اختر روم نصي.",
+              ephemeral: true
+            });
+          }
 
-            embeds: [
-              panelEmbed(settings)
-            ],
-
-            components: [
-              panelRow(settings)
-            ]
-
+          const panelMessage = await channel.send({
+            embeds: [panelEmbed(settings)],
+            components: [panelRow(settings)]
           });
+
+          settings.panelChannel = channel.id;
+          settings.panelMessage = panelMessage.id;
+          saveDB();
 
           return interaction.reply({
-
-            content:
-              `✅ تم إرسال لوحة التذاكر في ${channel}.`,
-
+            content: `✅ تم إنشاء لوحة التذاكر في ${channel}.\n🆔 Message ID: \`${panelMessage.id}\``,
             ephemeral: true
-
           });
-
         }
 
         // ==================================================
@@ -4009,6 +4633,212 @@ client.on(
         getGuild(
           message.guild.id
         );
+
+
+      // ==================================================
+      // MODERATION PREFIX COMMANDS
+      // ==================================================
+
+      const moderationAliases = [
+        "ت", "$ت", "تحذير", "$تحذير", "warn", "$warn",
+        "تايم", "$تايم", "timeout", "$timeout",
+        "سجن", "$سجن", "jail", "$jail",
+        "تف", "$تف", "ban", "$ban",
+        "طرد", "$طرد", "kick", "$kick",
+        "رجع", "$رجع", "unban", "$unban",
+        "$وقتي", "وقتي"
+      ];
+
+      const firstWord = content.split(/\s+/)[0].toLowerCase();
+
+      if (moderationAliases.includes(firstWord)) {
+        if (
+          staffLevel(message.member, settings) < 1 &&
+          !isServerManager(message.member) &&
+          message.guild.ownerId !== message.author.id &&
+          !["$وقتي", "وقتي"].includes(firstWord)
+        ) {
+          return message.reply("❌ ليس لديك صلاحية استخدام هذا الأمر.");
+        }
+
+        // $وقتي / وقتي
+        if (firstWord === "$وقتي" || firstWord === "وقتي") {
+          const jail = db.jails[warningKey(message.guild.id, message.author.id)];
+          if (!jail) {
+            return message.reply("ℹ️ أنت غير مسجون حاليًا.");
+          }
+
+          const remaining = jail.expiresAt
+            ? Math.max(0, jail.expiresAt - Date.now())
+            : null;
+
+          return message.reply({
+            embeds: [
+              new EmbedBuilder()
+                .setTitle("🔒 معلومات السجن")
+                .setColor("#ED4245")
+                .addFields(
+                  { name: "السبب", value: safeText(jail.reason || "بدون سبب"), inline: false },
+                  { name: "المدة المتبقية", value: remaining ? formatDuration(remaining) : "دائم", inline: true },
+                  { name: "وقت الانتهاء", value: jail.expiresAt ? `<t:${Math.floor(jail.expiresAt / 1000)}:R>` : "دائم", inline: true }
+                )
+                .setTimestamp()
+            ]
+          });
+        }
+
+        const rawNames = {
+          warn: ["ت", "$ت", "تحذير", "$تحذير", "warn", "$warn"],
+          timeout: ["تايم", "$تايم", "timeout", "$timeout"],
+          jail: ["سجن", "$سجن", "jail", "$jail"],
+          ban: ["تف", "$تف", "ban", "$ban"],
+          kick: ["طرد", "$طرد", "kick", "$kick"],
+          unban: ["رجع", "$رجع", "unban", "$unban"]
+        };
+
+        const matched = Object.entries(rawNames).find(([, names]) => names.includes(firstWord));
+        if (!matched) return;
+
+        const type = matched[0];
+
+        if (type === "unban") {
+          const rest = content.split(/\s+/).slice(1);
+          const userId = rest.shift();
+          const reason = rest.join(" ").trim() || "بدون سبب";
+          const result = await executeUnban({
+            guild: message.guild,
+            settings,
+            actor: message.member,
+            userId,
+            reason
+          });
+          return message.reply(result);
+        }
+
+        const extracted = extractTargetAndArgs(content, rawNames[type]);
+        const target = await resolveMember(message.guild, extracted.targetToken);
+
+        if (!target) {
+          return message.reply(`❌ لم أجد العضو.\\nالاستخدام: \`${firstWord} @العضو السبب المدة\``);
+        }
+
+        let duration = null;
+        let reason = extracted.rest;
+
+        if (type === "warn" || type === "timeout" || type === "jail") {
+          const last = extracted.args[extracted.args.length - 1];
+          const parsed = parseDuration(last);
+          if (parsed) {
+            duration = parsed;
+            reason = extracted.args.slice(0, -1).join(" ").trim();
+          }
+        }
+
+        if (!reason) reason = "بدون سبب";
+
+        let result;
+        if (type === "warn") {
+          result = await executeWarn({ guild: message.guild, settings, actor: message.member, target, reason, duration });
+        } else if (type === "timeout") {
+          if (!duration) return message.reply("❌ لازم تحدد مدة. مثال: `تايم @العضو سبام 10m`");
+          result = await executeTimeout({ guild: message.guild, settings, actor: message.member, target, reason, duration });
+        } else if (type === "jail") {
+          result = await executeJail({ guild: message.guild, settings, actor: message.member, target, reason, duration });
+        } else if (type === "ban") {
+          result = await executeBan({ guild: message.guild, settings, actor: message.member, target, reason });
+        } else {
+          result = await executeKick({ guild: message.guild, settings, actor: message.member, target, reason });
+        }
+
+        return message.reply(result);
+      }
+
+      // ==================================================
+      // STAFF / SETUP PREFIX COMMANDS
+      // ==================================================
+
+      if (firstWord === "$staffrole" || firstWord === "staffrole") {
+        if (!isServerManager(message.member) && message.guild.ownerId !== message.author.id) {
+          return message.reply("❌ هذا الأمر للإدارة فقط.");
+        }
+
+        const args = content.split(/\s+/).slice(1);
+        const level = String(args.shift() || "").toLowerCase();
+        const role = await resolveRole(message.guild, args.shift());
+
+        if (!["junior", "middle", "senior", "owner"].includes(level) || !role) {
+          return message.reply("❌ الاستخدام: `$staffrole junior @role` أو `$staffrole senior ROLE_ID`");
+        }
+
+        settings[`${level}Role`] = role.id;
+        saveDB();
+        return message.reply(`✅ تم ربط رتبة ${level} بالـID \`${role.id}\`.`);
+      }
+
+      if (firstWord === "$setup-ticket-category" || firstWord === "setup-ticket-category") {
+        if (!isServerManager(message.member) && message.guild.ownerId !== message.author.id) return message.reply("❌ للإدارة فقط.");
+        const roleOrChannel = message.mentions.channels.first();
+        const id = roleOrChannel?.id || content.split(/\s+/)[1];
+        const channel = id ? message.guild.channels.cache.get(id) : null;
+        if (!channel || channel.type !== ChannelType.GuildCategory) return message.reply("❌ منشن Category صحيحة أو اكتب ID الكاتيجوري.");
+        settings.category = channel.id;
+        saveDB();
+        return message.reply(`✅ تم تحديد كاتيجوري التذاكر: ${channel}`);
+      }
+
+      if (firstWord === "$setup-logs" || firstWord === "setup-logs") {
+        if (!isServerManager(message.member) && message.guild.ownerId !== message.author.id) return message.reply("❌ للإدارة فقط.");
+        const channel = message.mentions.channels.first() || message.guild.channels.cache.get(content.split(/\s+/)[1]);
+        if (!channel) return message.reply("❌ منشن روم اللوج أو اكتب ID.");
+        settings.logsChannel = channel.id;
+        saveDB();
+        return message.reply(`✅ تم تحديد روم اللوج: ${channel}`);
+      }
+
+      if (firstWord === "$setup-archive" || firstWord === "setup-archive") {
+        if (!isServerManager(message.member) && message.guild.ownerId !== message.author.id) return message.reply("❌ للإدارة فقط.");
+        const channel = message.mentions.channels.first() || message.guild.channels.cache.get(content.split(/\s+/)[1]);
+        if (!channel) return message.reply("❌ منشن روم الأرشيف أو اكتب ID.");
+        settings.archiveChannel = channel.id;
+        saveDB();
+        return message.reply(`✅ تم تحديد روم الأرشيف: ${channel}`);
+      }
+
+      if (firstWord === "$setup-application" || firstWord === "setup-application") {
+        if (!isServerManager(message.member) && message.guild.ownerId !== message.author.id) return message.reply("❌ للإدارة فقط.");
+        const channel = message.mentions.channels.first() || message.guild.channels.cache.get(content.split(/\s+/)[1]);
+        if (!channel) return message.reply("❌ منشن روم التقديم أو اكتب ID.");
+        settings.applicationChannel = channel.id;
+        saveDB();
+        return message.reply(`✅ تم تحديد روم التقديم: ${channel}`);
+      }
+
+      if (firstWord === "$setup-jail-role" || firstWord === "setup-jail-role") {
+        if (!isServerManager(message.member) && message.guild.ownerId !== message.author.id) return message.reply("❌ للإدارة فقط.");
+        const role = message.mentions.roles.first() || message.guild.roles.cache.get(content.split(/\s+/)[1]);
+        if (!role || role.id === message.guild.id) return message.reply("❌ منشن رتبة السجن أو اكتب ID صحيح.");
+        settings.jailRole = role.id;
+        saveDB();
+        return message.reply(`✅ تم تحديد رتبة السجن: ${role} — ID: \`${role.id}\``);
+      }
+
+      if (firstWord === "$rating-required" || firstWord === "rating-required") {
+        if (!isServerManager(message.member) && message.guild.ownerId !== message.author.id) return message.reply("❌ للإدارة فقط.");
+        const value = content.split(/\s+/)[1]?.toLowerCase();
+        if (!["on","off","تشغيل","ايقاف","إيقاف"].includes(value)) return message.reply("❌ الاستخدام: `$rating-required on` أو `off`");
+        settings.requireRating = ["on","تشغيل"].includes(value);
+        saveDB();
+        return message.reply(`✅ التقييم الإجباري: ${settings.requireRating ? "مفعل" : "متوقف"}`);
+      }
+
+      if (firstWord === "$max-tickets" || firstWord === "max-tickets") {
+        if (!isServerManager(message.member) && message.guild.ownerId !== message.author.id) return message.reply("❌ للإدارة فقط.");
+        const amount = Number(content.split(/\s+/)[1]);
+        if (!Number.isInteger(amount) || amount < 1 || amount > 10) return message.reply("❌ العدد من 1 إلى 10.");
+        settings.maxTickets = amount;
+        saveDB();
+        return message.reply(`✅ الحد الأقصى للتذاكر: **${amount}**`);
+      }
 
       // ==================================================
       // $DM
@@ -4684,6 +5514,185 @@ if (
 
 });
 
+
+// ==================================================
+// SLASH COMMAND REGISTRATION
+// ==================================================
+
+function buildSlashCommands() {
+  return [
+    new SlashCommandBuilder()
+      .setName("panel")
+      .setDescription("إرسال لوحة التذاكر")
+      .addChannelOption(o =>
+        o.setName("channel")
+          .setDescription("الروم الذي سترسل فيه اللوحة")
+          .setRequired(false)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("stats")
+      .setDescription("عرض إحصائيات موظف")
+      .addUserOption(o =>
+        o.setName("member")
+          .setDescription("الموظف")
+          .setRequired(false)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("warn")
+      .setDescription("تحذير عضو")
+      .addUserOption(o =>
+        o.setName("member").setDescription("العضو").setRequired(true)
+      )
+      .addStringOption(o =>
+        o.setName("reason").setDescription("السبب").setRequired(true)
+      )
+      .addStringOption(o =>
+        o.setName("duration").setDescription("المدة مثل 1h أو 7d").setRequired(false)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("timeout")
+      .setDescription("إعطاء Timeout لعضو")
+      .addUserOption(o =>
+        o.setName("member").setDescription("العضو").setRequired(true)
+      )
+      .addStringOption(o =>
+        o.setName("reason").setDescription("السبب").setRequired(true)
+      )
+      .addStringOption(o =>
+        o.setName("duration").setDescription("المدة مثل 10m أو 1h").setRequired(true)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("jail")
+      .setDescription("سجن عضو")
+      .addUserOption(o =>
+        o.setName("member").setDescription("العضو").setRequired(true)
+      )
+      .addStringOption(o =>
+        o.setName("reason").setDescription("السبب").setRequired(true)
+      )
+      .addStringOption(o =>
+        o.setName("duration").setDescription("المدة مثل 1h أو 1d").setRequired(false)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("ban")
+      .setDescription("حظر عضو")
+      .addUserOption(o =>
+        o.setName("member").setDescription("العضو").setRequired(true)
+      )
+      .addStringOption(o =>
+        o.setName("reason").setDescription("السبب").setRequired(true)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("kick")
+      .setDescription("طرد عضو")
+      .addUserOption(o =>
+        o.setName("member").setDescription("العضو").setRequired(true)
+      )
+      .addStringOption(o =>
+        o.setName("reason").setDescription("السبب").setRequired(true)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("unban")
+      .setDescription("فك حظر عضو بواسطة ID")
+      .addStringOption(o =>
+        o.setName("user_id").setDescription("Discord User ID").setRequired(true)
+      )
+      .addStringOption(o =>
+        o.setName("reason").setDescription("السبب").setRequired(false)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("setup-ticket-category")
+      .setDescription("تحديد كاتيجوري التذاكر")
+      .addChannelOption(o =>
+        o.setName("category")
+          .setDescription("كاتيجوري التذاكر")
+          .setRequired(true)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("setup-logs")
+      .setDescription("تحديد روم اللوج")
+      .addChannelOption(o =>
+        o.setName("channel")
+          .setDescription("روم اللوج")
+          .setRequired(true)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("setup-archive")
+      .setDescription("تحديد روم أرشيف التذاكر")
+      .addChannelOption(o =>
+        o.setName("channel")
+          .setDescription("روم الأرشيف")
+          .setRequired(true)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("setup-application")
+      .setDescription("تحديد روم التقديم")
+      .addChannelOption(o =>
+        o.setName("channel")
+          .setDescription("روم التقديم")
+          .setRequired(true)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("setup-jail-role")
+      .setDescription("تحديد رتبة السجن")
+      .addRoleOption(o =>
+        o.setName("role")
+          .setDescription("رتبة السجن")
+          .setRequired(true)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("staff-role")
+      .setDescription("ربط رتبة الاستف بمستوى")
+      .addStringOption(o =>
+        o.setName("level")
+          .setDescription("مستوى الاستف")
+          .setRequired(true)
+          .addChoices(
+            { name: "Junior / الصغرى", value: "junior" },
+            { name: "Middle / الوسطى", value: "middle" },
+            { name: "Senior / العليا", value: "senior" },
+            { name: "Owner / الأونر", value: "owner" }
+          )
+      )
+      .addRoleOption(o =>
+        o.setName("role")
+          .setDescription("الرتبة")
+          .setRequired(true)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("rating-required")
+      .setDescription("تشغيل أو إيقاف إلزام التقييم قبل حذف التذكرة")
+      .addBooleanOption(o =>
+        o.setName("enabled").setDescription("تشغيل").setRequired(true)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("max-tickets")
+      .setDescription("تحديد أقصى عدد تذاكر مفتوحة للعضو")
+      .addIntegerOption(o =>
+        o.setName("amount")
+          .setDescription("العدد")
+          .setMinValue(1)
+          .setMaxValue(10)
+          .setRequired(true)
+      )
+  ].map(c => c.toJSON());
+}
+
 // ==================================================
 // READY
 // ==================================================
@@ -4719,6 +5728,16 @@ client.once(
       }
     );
 
+    try {
+      await client.application.commands.set(
+        buildSlashCommands()
+      );
+      console.log("✅ Slash commands registered.");
+    } catch (error) {
+      console.error("❌ Slash registration error:", error);
+    }
+
+    await restoreJails();
   }
 );
 
