@@ -11,7 +11,8 @@ const {
   SlashCommandBuilder,
   ModalBuilder,
   TextInputBuilder,
-  TextInputStyle
+  TextInputStyle,
+  AttachmentBuilder
 } = require("discord.js");
 
 const fs = require("fs");
@@ -60,7 +61,11 @@ let db = {
   tickets: {},
   applications: {},
   warnings: {},
-  jails: {}
+  jails: {},
+  zenix: {
+    balances: {},
+    daily: {}
+  }
 };
 
 // ==================================================
@@ -86,6 +91,9 @@ function loadDB() {
     db.applications ||= {};
     db.warnings ||= {};
     db.jails ||= {};
+    db.zenix ||= { balances: {}, daily: {} };
+    db.zenix.balances ||= {};
+    db.zenix.daily ||= {};
 
   } catch (error) {
     console.error(
@@ -122,6 +130,111 @@ function saveDB() {
 // ==================================================
 
 loadDB();
+
+// ==================================================
+// ZENIX ⚡ CURRENCY
+// ==================================================
+
+const ZENIX_OWNER_ID = "1520158389521354805";
+const ZENIX_NAME = "Zenix ⚡";
+const ZENIX_DAILY_AMOUNT = 100;
+const pendingZenixTransfers = new Map();
+
+function getZenixBalance(userId) {
+  db.zenix ||= { balances: {}, daily: {} };
+  db.zenix.balances ||= {};
+  db.zenix.daily ||= {};
+  return Math.max(0, Number(db.zenix.balances[userId] || 0));
+}
+
+function setZenixBalance(userId, amount) {
+  db.zenix ||= { balances: {}, daily: {} };
+  db.zenix.balances ||= {};
+  db.zenix.balances[userId] = Math.max(0, Math.floor(Number(amount) || 0));
+  saveDB();
+  return db.zenix.balances[userId];
+}
+
+function addZenix(userId, amount) {
+  return setZenixBalance(userId, getZenixBalance(userId) + Math.floor(Number(amount) || 0));
+}
+
+function formatZenix(amount) {
+  return `${Number(amount || 0).toLocaleString("en-US")} ${ZENIX_NAME}`;
+}
+
+function zenixCaptchaSvg(code) {
+  const chars = String(code).split("");
+  const positions = [92, 145, 198, 251, 304, 357];
+  const rotations = [-8, 6, -4, 8, -6, 4];
+
+  const text = chars.map((char, i) =>
+    `<text x="${positions[i]}" y="${145 + (i % 2 ? -5 : 6)}" transform="rotate(${rotations[i]} ${positions[i]} 145)" font-size="58" font-family="Arial, sans-serif" font-weight="900" fill="#ffffff">${char}</text>`
+  ).join("");
+
+  const lines = Array.from({ length: 7 }, (_, i) =>
+    `<line x1="${20 + i * 65}" y1="${35 + (i * 31) % 150}" x2="${390 - i * 27}" y2="${170 + (i * 19) % 80}" stroke="#ffffff" stroke-opacity=".28" stroke-width="3"/>`
+  ).join("");
+
+  const circles = Array.from({ length: 22 }, (_, i) =>
+    `<circle cx="${20 + (i * 67) % 390}" cy="${20 + (i * 43) % 190}" r="${2 + (i % 4)}" fill="#ffffff" fill-opacity=".22"/>`
+  ).join("");
+
+  return `
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="220" viewBox="0 0 420 220">
+  <defs>
+    <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#5865F2"/>
+      <stop offset="50%" stop-color="#7c3aed"/>
+      <stop offset="100%" stop-color="#111827"/>
+    </linearGradient>
+    <filter id="shadow"><feDropShadow dx="0" dy="4" stdDeviation="5" flood-opacity=".35"/></filter>
+  </defs>
+  <rect width="420" height="220" rx="24" fill="url(#g)"/>
+  ${circles}
+  ${lines}
+  <rect x="28" y="28" width="364" height="164" rx="18" fill="#000000" fill-opacity=".16"/>
+  <text x="210" y="48" text-anchor="middle" fill="#ffffff" fill-opacity=".9" font-size="16" font-family="Arial, sans-serif" font-weight="700">ZENIX ⚡ SECURITY</text>
+  <g filter="url(#shadow)">${text}</g>
+  <text x="210" y="190" text-anchor="middle" fill="#ffffff" fill-opacity=".85" font-size="12" font-family="Arial, sans-serif">اكتب الأرقام كما تظهر لتأكيد التحويل</text>
+</svg>`;
+}
+
+function createZenixCaptcha() {
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  return {
+    code,
+    attachment: new AttachmentBuilder(
+      Buffer.from(zenixCaptchaSvg(code), "utf8"),
+      { name: "zenix-captcha.svg" }
+    )
+  };
+}
+
+function zenixHelpEmbed() {
+  return new EmbedBuilder()
+    .setTitle("⚡ Zenix — نظام العملة")
+    .setColor("#7C3AED")
+    .setDescription(
+      [
+        `**${ZENIX_NAME}** هي العملة الخاصة بالبوت.`,
+        "",
+        "💰 **الرصيد:** `$zenix` أو `$زينكس`",
+        "🔁 **تحويل:** `$تحويل @العضو المبلغ`",
+        "🎁 **اليومي:** `$يومي`",
+        "🏆 **المتصدرين:** `$topzenix`",
+        "",
+        "🛡️ **لأونر البوت فقط:**",
+        "`$zenix add @العضو المبلغ`",
+        "`$zenix remove @العضو المبلغ`",
+        "`$zenix set @العضو المبلغ`",
+        "",
+        "🔐 التحويل يحتاج رمز أمان مصور قبل خصم الرصيد."
+      ].join("\n")
+    )
+    .setFooter({ text: "Zenix ⚡" })
+    .setTimestamp();
+}
 
 // ==================================================
 // DEFAULT PANEL
@@ -4629,6 +4742,290 @@ client.on(
         return;
       }
 
+      // ==================================================
+      // ZENIX ⚡ CURRENCY COMMANDS
+      // ==================================================
+
+      const zenixFirst = content.split(/\s+/)[0];
+      const zenixLower = zenixFirst.toLowerCase();
+      const zenixKey = `${message.guild?.id || "dm"}:${message.author.id}`;
+
+      // Confirm an active transfer captcha before handling normal commands.
+      const pendingTransfer = pendingZenixTransfers.get(zenixKey);
+      if (pendingTransfer && /^\d{6}$/.test(content)) {
+        if (Date.now() > pendingTransfer.expiresAt) {
+          pendingZenixTransfers.delete(zenixKey);
+          return message.reply("⌛ انتهت مهلة تأكيد التحويل. أعد أمر التحويل من جديد.");
+        }
+
+        if (content === pendingTransfer.code) {
+          const currentBalance = getZenixBalance(message.author.id);
+          if (currentBalance < pendingTransfer.amount) {
+            pendingZenixTransfers.delete(zenixKey);
+            return message.reply("❌ رصيدك لم يعد كافيًا لإتمام التحويل.");
+          }
+
+          addZenix(pendingTransfer.targetId, pendingTransfer.amount);
+          setZenixBalance(message.author.id, currentBalance - pendingTransfer.amount);
+          pendingZenixTransfers.delete(zenixKey);
+
+          const receipt = new EmbedBuilder()
+            .setTitle("⚡ تم تحويل Zenix بنجاح")
+            .setColor("#57F287")
+            .addFields(
+              { name: "👤 المرسل", value: `<@${message.author.id}>`, inline: true },
+              { name: "📥 المستلم", value: `<@${pendingTransfer.targetId}>`, inline: true },
+              { name: "💰 المبلغ", value: formatZenix(pendingTransfer.amount), inline: true },
+              { name: "💳 رصيدك الجديد", value: formatZenix(getZenixBalance(message.author.id)), inline: false }
+            )
+            .setFooter({ text: "Zenix ⚡ • عملية مؤكدة" })
+            .setTimestamp();
+
+          await message.reply({ embeds: [receipt] });
+
+          try {
+            const targetUser = await client.users.fetch(pendingTransfer.targetId);
+            await targetUser.send({
+              embeds: [
+                new EmbedBuilder()
+                  .setTitle("💰 وصلتك Zenix!")
+                  .setColor("#57F287")
+                  .setDescription(
+                    `تم تحويل **${formatZenix(pendingTransfer.amount)}** إليك بواسطة <@${message.author.id}>.`
+                  )
+                  .addFields({
+                    name: "💳 رصيدك الحالي",
+                    value: formatZenix(getZenixBalance(pendingTransfer.targetId)),
+                    inline: true
+                  })
+                  .setFooter({ text: "Zenix ⚡" })
+                  .setTimestamp()
+              ]
+            });
+          } catch {}
+
+          return;
+        }
+
+        pendingTransfer.attempts++;
+        if (pendingTransfer.attempts >= 5) {
+          pendingZenixTransfers.delete(zenixKey);
+          return message.reply("❌ تم إلغاء التحويل بعد 5 محاولات خاطئة.");
+        }
+
+        return message.reply(`❌ الرمز غير صحيح. المحاولات المتبقية: ${5 - pendingTransfer.attempts}`);
+      }
+
+      // Balance / help / admin currency controls
+      if (
+        ["$zenix", "$زينكس", "zenix", "زينكس", "$رصيد", "رصيد"].includes(zenixLower)
+      ) {
+        if (content.split(/\s+/).length === 1) {
+          return message.reply({
+            embeds: [
+              new EmbedBuilder()
+                .setTitle("⚡ Zenix Balance")
+                .setColor("#7C3AED")
+                .setDescription(`**${message.author}**\n\n💰 رصيدك الحالي:\n# ${formatZenix(getZenixBalance(message.author.id))}`)
+                .addFields(
+                  { name: "🎁 اليومي", value: `\`${"$يومي"}\` للحصول على ${formatZenix(ZENIX_DAILY_AMOUNT)}`, inline: true },
+                  { name: "🔁 التحويل", value: "`$تحويل @العضو المبلغ`", inline: true }
+                )
+                .setFooter({ text: "Zenix ⚡" })
+                .setTimestamp()
+            ]
+          });
+        }
+
+        const args = content.trim().split(/\s+/);
+        const action = args[1]?.toLowerCase();
+        if (!["add", "remove", "set", "help"].includes(action)) {
+          return message.reply({ embeds: [zenixHelpEmbed()] });
+        }
+
+        if (action === "help") {
+          return message.reply({ embeds: [zenixHelpEmbed()] });
+        }
+
+        if (message.author.id !== ZENIX_OWNER_ID) {
+          return message.reply("❌ هذا الأمر متاح لأونر البوت فقط.");
+        }
+
+        const target = message.mentions.users.first();
+        const amount = Number(args.find((x, i) => i >= 2 && /^\d+$/.test(x)));
+
+        if (!target || !Number.isInteger(amount) || amount < 0) {
+          return message.reply(
+            "❌ الاستخدام:\n`$zenix add @العضو 100`\n`$zenix remove @العضو 100`\n`$zenix set @العضو 100`"
+          );
+        }
+
+        const oldBalance = getZenixBalance(target.id);
+        let newBalance = oldBalance;
+
+        if (action === "add") newBalance = oldBalance + amount;
+        if (action === "remove") newBalance = Math.max(0, oldBalance - amount);
+        if (action === "set") newBalance = amount;
+
+        setZenixBalance(target.id, newBalance);
+
+        return message.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("🛡️ إدارة Zenix")
+              .setColor("#5865F2")
+              .setDescription(`تم تنفيذ العملية على ${target}.`)
+              .addFields(
+                { name: "⚙️ العملية", value: action, inline: true },
+                { name: "💰 قبل", value: formatZenix(oldBalance), inline: true },
+                { name: "💳 بعد", value: formatZenix(newBalance), inline: true }
+              )
+              .setFooter({ text: `Owner: ${ZENIX_OWNER_ID}` })
+              .setTimestamp()
+          ]
+        });
+      }
+
+      if (
+        zenixLower === "$يومي" ||
+        zenixLower === "يومي" ||
+        zenixLower === "$daily" ||
+        zenixLower === "daily"
+      ) {
+        const now = Date.now();
+        const last = Number(db.zenix.daily[message.author.id] || 0);
+        const cooldown = 24 * 60 * 60 * 1000;
+
+        if (now - last < cooldown) {
+          const remaining = cooldown - (now - last);
+          return message.reply(`⏳ استلمت مكافأة اليوم بالفعل. ارجع بعد **${formatDuration(remaining)}**.`);
+        }
+
+        db.zenix.daily[message.author.id] = now;
+        addZenix(message.author.id, ZENIX_DAILY_AMOUNT);
+
+        return message.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("🎁 مكافأة Zenix اليومية")
+              .setColor("#FEE75C")
+              .setDescription(`حصلت على **${formatZenix(ZENIX_DAILY_AMOUNT)}**!`)
+              .addFields({
+                name: "💳 رصيدك الآن",
+                value: formatZenix(getZenixBalance(message.author.id)),
+                inline: true
+              })
+              .setFooter({ text: "ارجع غدًا لمكافأة جديدة ⚡" })
+              .setTimestamp()
+          ]
+        });
+      }
+
+      if (
+        zenixLower === "$topzenix" ||
+        zenixLower === "topzenix" ||
+        zenixLower === "$توبزينكس" ||
+        zenixLower === "توبزينكس"
+      ) {
+        const entries = Object.entries(db.zenix.balances)
+          .filter(([, balance]) => Number(balance) > 0)
+          .sort((a, b) => Number(b[1]) - Number(a[1]))
+          .slice(0, 10);
+
+        if (!entries.length) {
+          return message.reply("🏆 لا يوجد أرصدة Zenix حتى الآن.");
+        }
+
+        const rows = [];
+        for (let i = 0; i < entries.length; i++) {
+          const [userId, balance] = entries[i];
+          rows.push(`**${i + 1}.** <@${userId}> — **${formatZenix(balance)}**`);
+        }
+
+        return message.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("🏆 Zenix Leaderboard")
+              .setColor("#7C3AED")
+              .setDescription(rows.join("\n"))
+              .setFooter({ text: "Zenix ⚡ • أعلى 10 أرصدة" })
+              .setTimestamp()
+          ]
+        });
+      }
+
+      // Transfer: $تحويل @user amount
+      if (
+        ["$تحويل", "تحويل", "$transfer", "transfer"].includes(zenixLower)
+      ) {
+        const target = message.mentions.users.first();
+        const args = content.split(/\s+/);
+        const amount = Number(args.find((x, i) => i > 0 && /^\d+$/.test(x)));
+
+        if (!target || !Number.isInteger(amount) || amount <= 0) {
+          return message.reply("❌ الاستخدام الصحيح:\n`$تحويل @العضو 100`");
+        }
+
+        if (target.bot) {
+          return message.reply("❌ لا يمكن تحويل Zenix إلى بوت.");
+        }
+
+        if (target.id === message.author.id) {
+          return message.reply("❌ لا يمكنك تحويل Zenix لنفسك.");
+        }
+
+        const balance = getZenixBalance(message.author.id);
+        if (balance < amount) {
+          return message.reply(`❌ رصيدك غير كافٍ.\nرصيدك: **${formatZenix(balance)}**`);
+        }
+
+        const captcha = createZenixCaptcha();
+        pendingZenixTransfers.set(zenixKey, {
+          code: captcha.code,
+          targetId: target.id,
+          amount,
+          attempts: 0,
+          expiresAt: Date.now() + 90_000
+        });
+
+        const captchaEmbed = new EmbedBuilder()
+          .setTitle("🔐 تأكيد تحويل Zenix")
+          .setColor("#7C3AED")
+          .setDescription(
+            `سيتم تحويل **${formatZenix(amount)}** إلى ${target}.\n\n` +
+            "اكتب **الأرقام الظاهرة في الصورة** في نفس الشات خلال **90 ثانية**.\n" +
+            "لإلغاء العملية اكتب: `$الغاء`"
+          )
+          .setImage("attachment://zenix-captcha.svg")
+          .addFields(
+            { name: "💳 رصيدك قبل التحويل", value: formatZenix(balance), inline: true },
+            { name: "📥 المستلم", value: `${target}`, inline: true }
+          )
+          .setFooter({ text: "Zenix ⚡ Security" })
+          .setTimestamp();
+
+        return message.reply({
+          embeds: [captchaEmbed],
+          files: [captcha.attachment]
+        });
+      }
+
+      if (
+        zenixLower === "$الغاء" ||
+        zenixLower === "الغاء" ||
+        zenixLower === "$canceltransfer"
+      ) {
+        if (!pendingTransfer) {
+          return message.reply("ℹ️ لا يوجد تحويل معلّق.");
+        }
+        pendingZenixTransfers.delete(zenixKey);
+        return message.reply("✅ تم إلغاء التحويل.");
+      }
+
+      if (!message.guild) {
+        return;
+      }
+
       const settings =
         getGuild(
           message.guild.id
@@ -5722,7 +6119,7 @@ client.once(
     );
 
     client.user.setActivity(
-      "KRX Tickets",
+      "Zenix ⚡ • Tickets",
       {
         type: 3
       }
