@@ -1,16 +1,15 @@
 {
-  "name": "professional-ticket-bot",
+  "name": "zenix-discord-bot",
   "version": "1.0.0",
-  "description": "Professional Discord ticket bot with configurable staff hierarchy, claims, transcripts, ratings and applications.",
+  "description": "Discord ticket + Zenix ⚡ economy bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=18"
   },
   "dependencies": {
-    "discord.js": "^14.24.2",
-    "dotenv": "^17.2.2"
+    "discord.js": "^14.21.0"
   }
 }
