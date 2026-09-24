@@ -144,6 +144,7 @@ function getZenixBalance(userId) {
   db.zenix ||= { balances: {}, daily: {} };
   db.zenix.balances ||= {};
   db.zenix.daily ||= {};
+  db.zenix.work ||= {};
   return Math.max(0, Number(db.zenix.balances[userId] || 0));
 }
 
@@ -1894,10 +1895,21 @@ async function createTicket(
   // رسالة الترحيب
   // ----------------------------------------------
 
+  let juniorMention = "";
+  if (settings.juniorRole) {
+    juniorMention = `<@&${settings.juniorRole}>`;
+    try {
+      const juniorRole = guild.roles.cache.get(settings.juniorRole);
+      if (juniorRole && juniorRole.editable && !juniorRole.mentionable) {
+        await juniorRole.setMentionable(true, "تفعيل منشن رتبة الاستاف الصغرى للتذاكر");
+      }
+    } catch {}
+  }
+
   await channel.send({
 
     content:
-      `<@${user.id}>`,
+      `${juniorMention} <@${user.id}> <@${client.user.id}>`.trim(),
 
     embeds: [
       embed
@@ -3434,12 +3446,21 @@ async function archiveTicket(
     });
 
     // ----------------------------------------------
-    // إرسال Transcript
+    // إرسال Transcript كملف + معاينة
     // ----------------------------------------------
 
+    const transcriptAttachment = new AttachmentBuilder(
+      Buffer.from(transcript, "utf8"),
+      { name: `ticket-${channel.id}-transcript.txt` }
+    );
+
+    await archiveChannel.send({
+      content: "📄 **Transcript كامل للتذكرة:**",
+      files: [transcriptAttachment]
+    });
+
     /*
-      لو الـTranscript كبير جدًا
-      نقسمه إلى أجزاء.
+      معاينة قصيرة داخل اللوق حتى تكون الرسائل ظاهرة مباشرة.
     */
 
     const MAX_LENGTH =
@@ -4492,6 +4513,9 @@ client.on(
             const level = interaction.options.getString("level");
             const role = interaction.options.getRole("role");
             settings[`${level}Role`] = role.id;
+            if (level === "junior" && role.editable && !role.mentionable) {
+              try { await role.setMentionable(true, "تفعيل منشن رتبة الاستاف الصغرى للتذاكر"); } catch {}
+            }
           }
 
           if (command === "rating-required") {
@@ -4715,6 +4739,98 @@ client.on(
 );
 
 // ==================================================
+// GLOBAL AUDIT LOGS
+// ==================================================
+
+client.on("guildMemberAdd", async member => {
+  const settings = getGuild(member.guild.id);
+  await sendLog(member.guild, settings, new EmbedBuilder()
+    .setTitle("📥 دخول عضو")
+    .setColor("#57F287")
+    .addFields(
+      { name: "👤 العضو", value: `${member} (\`${member.id}\`)`, inline: false },
+      { name: "🕐 الوقت", value: logTime(), inline: true }
+    ).setTimestamp());
+});
+
+client.on("guildMemberRemove", async member => {
+  const settings = getGuild(member.guild.id);
+  await sendLog(member.guild, settings, new EmbedBuilder()
+    .setTitle("📤 خروج عضو")
+    .setColor("#ED4245")
+    .addFields(
+      { name: "👤 العضو", value: `${member.user?.tag || member.id} (\`${member.id}\`)`, inline: false },
+      { name: "🕐 الوقت", value: logTime(), inline: true }
+    ).setTimestamp());
+});
+
+client.on("channelCreate", async channel => {
+  if (!channel.guild) return;
+  const settings = getGuild(channel.guild.id);
+  await sendLog(channel.guild, settings, new EmbedBuilder()
+    .setTitle("📺 إنشاء روم")
+    .setColor("#57F287")
+    .setDescription(`تم إنشاء ${channel}\nID: \`${channel.id}\``)
+    .setTimestamp());
+});
+
+client.on("channelDelete", async channel => {
+  if (!channel.guild) return;
+  const settings = getGuild(channel.guild.id);
+  await sendLog(channel.guild, settings, new EmbedBuilder()
+    .setTitle("🗑️ حذف روم")
+    .setColor("#ED4245")
+    .setDescription(`تم حذف \`#${channel.name}\`\nID: \`${channel.id}\``)
+    .setTimestamp());
+});
+
+client.on("roleCreate", async role => {
+  const settings = getGuild(role.guild.id);
+  await sendLog(role.guild, settings, new EmbedBuilder()
+    .setTitle("🏷️ إنشاء رتبة")
+    .setColor("#57F287")
+    .setDescription(`${role} — \`${role.id}\``)
+    .setTimestamp());
+});
+
+client.on("roleDelete", async role => {
+  const settings = getGuild(role.guild.id);
+  await sendLog(role.guild, settings, new EmbedBuilder()
+    .setTitle("🗑️ حذف رتبة")
+    .setColor("#ED4245")
+    .setDescription(`\`${role.name}\` — \`${role.id}\``)
+    .setTimestamp());
+});
+
+client.on("messageDelete", async msg => {
+  if (!msg.guild || msg.author?.bot) return;
+  const settings = getGuild(msg.guild.id);
+  const content = msg.content ? (msg.content.length > 1000 ? msg.content.slice(0,1000)+"…" : msg.content) : "[بدون نص]";
+  await sendLog(msg.guild, settings, new EmbedBuilder()
+    .setTitle("🗑️ حذف رسالة")
+    .setColor("#ED4245")
+    .addFields(
+      { name: "👤 الكاتب", value: `${msg.author || "غير معروف"} (\`${msg.author?.id || "?"}\`)`, inline: false },
+      { name: "📺 الروم", value: `${msg.channel} (\`${msg.channel.id}\`)`, inline: true },
+      { name: "💬 المحتوى", value: content, inline: false }
+    ).setTimestamp());
+});
+
+client.on("messageUpdate", async (oldMsg, newMsg) => {
+  if (!newMsg.guild || newMsg.author?.bot || oldMsg.content === newMsg.content) return;
+  const settings = getGuild(newMsg.guild.id);
+  await sendLog(newMsg.guild, settings, new EmbedBuilder()
+    .setTitle("✏️ تعديل رسالة")
+    .setColor("#FEE75C")
+    .addFields(
+      { name: "👤 الكاتب", value: `${newMsg.author || "غير معروف"} (\`${newMsg.author?.id || "?"}\`)`, inline: false },
+      { name: "📺 الروم", value: `${newMsg.channel}`, inline: true },
+      { name: "قبل", value: (oldMsg.content || "[بدون نص]").slice(0,900), inline: false },
+      { name: "بعد", value: (newMsg.content || "[بدون نص]").slice(0,900), inline: false }
+    ).setTimestamp());
+});
+
+// ==================================================
 // PREFIX COMMANDS
 // ==================================================
 
@@ -4740,6 +4856,20 @@ client.on(
 
       if (!content) {
         return;
+      }
+
+      // سجل أوامر البريفكس تلقائيًا
+      if (content.startsWith("$")) {
+        const preview = content.length > 900 ? content.slice(0, 900) + "…" : content;
+        const commandLogSettings = getGuild(message.guild.id);
+        await sendLog(message.guild, commandLogSettings, new EmbedBuilder()
+          .setTitle("📝 أمر Bot")
+          .setColor("#5865F2")
+          .addFields(
+            { name: "👤 المستخدم", value: `${message.author} (\`${message.author.id}\`)`, inline: false },
+            { name: "📺 الروم", value: `${message.channel} (\`${message.channel.id}\`)`, inline: true },
+            { name: "💬 الأمر", value: `\`\`\`\n${preview}\n\`\`\``, inline: false }
+          ).setTimestamp());
       }
 
       // ==================================================
@@ -4768,6 +4898,16 @@ client.on(
           addZenix(pendingTransfer.targetId, pendingTransfer.amount);
           setZenixBalance(message.author.id, currentBalance - pendingTransfer.amount);
           pendingZenixTransfers.delete(zenixKey);
+
+          await sendLog(message.guild, getGuild(message.guild.id), new EmbedBuilder()
+            .setTitle("💸 تحويل Zenix")
+            .setColor("#57F287")
+            .addFields(
+              { name: "👤 المرسل", value: `${message.author} (\`${message.author.id}\`)`, inline: true },
+              { name: "📥 المستلم", value: `<@${pendingTransfer.targetId}> (\`${pendingTransfer.targetId}\`)`, inline: true },
+              { name: "💰 المبلغ", value: formatZenix(pendingTransfer.amount), inline: true },
+              { name: "🕐 الوقت", value: logTime(), inline: true }
+            ).setTimestamp());
 
           const receipt = new EmbedBuilder()
             .setTitle("⚡ تم تحويل Zenix بنجاح")
@@ -4869,6 +5009,17 @@ client.on(
 
         setZenixBalance(target.id, newBalance);
 
+        await sendLog(message.guild, settings, new EmbedBuilder()
+          .setTitle("⚡ تعديل رصيد Zenix")
+          .setColor("#7C3AED")
+          .addFields(
+            { name: "👤 المنفذ", value: `${message.author} (\`${message.author.id}\`)`, inline: false },
+            { name: "🎯 العضو", value: `${target} (\`${target.id}\`)`, inline: false },
+            { name: "⚙️ العملية", value: action, inline: true },
+            { name: "💰 قبل", value: formatZenix(oldBalance), inline: true },
+            { name: "💳 بعد", value: formatZenix(newBalance), inline: true }
+          ).setTimestamp());
+
         return message.reply({
           embeds: [
             new EmbedBuilder()
@@ -4918,6 +5069,48 @@ client.on(
               .setFooter({ text: "ارجع غدًا لمكافأة جديدة ⚡" })
               .setTimestamp()
           ]
+        });
+      }
+
+      // Zenix Work: مكافأة كل ساعة
+      if (["$عمل", "عمل", "$work", "work"].includes(zenixLower)) {
+        db.zenix.work ||= {};
+        const now = Date.now();
+        const last = Number(db.zenix.work[message.author.id] || 0);
+        const cooldown = 60 * 60 * 1000;
+        if (now - last < cooldown) {
+          return message.reply(`⏳ اشتغلت مؤخرًا. ارجع بعد **${formatDuration(cooldown - (now - last))}**.`);
+        }
+        const earned = Math.floor(Math.random() * 56) + 25;
+        db.zenix.work[message.author.id] = now;
+        addZenix(message.author.id, earned);
+        return message.reply({
+          embeds: [new EmbedBuilder()
+            .setTitle("💼 شغل Zenix")
+            .setColor("#57F287")
+            .setDescription(`اشتغلت وكسبت **${formatZenix(earned)}** ⚡`)
+            .addFields({ name: "💳 رصيدك", value: formatZenix(getZenixBalance(message.author.id)), inline: true })
+            .setFooter({ text: "تقدر تشتغل مرة كل ساعة" })
+            .setTimestamp()]
+        });
+      }
+
+      // Zenix Profile
+      if (["$بروفايل", "بروفايل", "$profile", "profile"].includes(zenixLower)) {
+        const memberLevel = staffLevel(message.member, getGuild(message.guild.id));
+        const ticketStats = getGuild(message.guild.id).staff?.[message.author.id] || {};
+        return message.reply({
+          embeds: [new EmbedBuilder()
+            .setTitle(`👤 ملف ${message.author.username}`)
+            .setThumbnail(message.author.displayAvatarURL({ dynamic: true }))
+            .setColor("#7C3AED")
+            .addFields(
+              { name: "⚡ Zenix", value: formatZenix(getZenixBalance(message.author.id)), inline: true },
+              { name: "🛡️ الرتبة", value: levelName(memberLevel), inline: true },
+              { name: "🎫 مستلمة", value: String(ticketStats.claimed || 0), inline: true },
+              { name: "🔴 مغلقة", value: String(ticketStats.closed || 0), inline: true },
+              { name: "⭐ التقييم", value: averageRating(message.guild.id, message.author.id), inline: true }
+            ).setFooter({ text: "Zenix ⚡ • Profile" }).setTimestamp()]
         });
       }
 
@@ -5031,6 +5224,54 @@ client.on(
           message.guild.id
         );
 
+      const firstWord = content.split(/\s+/)[0].toLowerCase();
+
+      // ==================================================
+      // 🧹 CHANNEL / ROLE MANAGEMENT
+      // ==================================================
+
+      if (["$مسح-روم", "$مسحالروم", "$delete-channel", "$delchannel"].includes(firstWord)) {
+        if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels) && message.guild.ownerId !== message.author.id) {
+          return message.reply("❌ تحتاج صلاحية Manage Channels.");
+        }
+        const targetChannel = message.mentions.channels.first() || message.channel;
+        if (!targetChannel.deletable) {
+          return message.reply("❌ لا أستطيع حذف هذا الروم. تأكد من صلاحيات البوت وترتيب الرتب.");
+        }
+        const name = targetChannel.name;
+        const id = targetChannel.id;
+        await sendLog(message.guild, settings, new EmbedBuilder()
+          .setTitle("🗑️ حذف روم")
+          .setColor("#ED4245")
+          .addFields(
+            { name: "👤 المنفذ", value: `${message.author} (\`${message.author.id}\`)`, inline: false },
+            { name: "📺 الروم", value: `#${name} (\`${id}\`)`, inline: false },
+            { name: "🕐 الوقت", value: logTime(), inline: true }
+          ).setTimestamp());
+        await targetChannel.delete(`حذف روم بواسطة ${message.author.tag}`);
+        return;
+      }
+
+      if (["$مسح-رتبة", "$مسحالرتبة", "$delete-role", "$delrole"].includes(firstWord)) {
+        if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles) && message.guild.ownerId !== message.author.id) {
+          return message.reply("❌ تحتاج صلاحية Manage Roles.");
+        }
+        const role = message.mentions.roles.first() || message.guild.roles.cache.get(content.split(/\s+/)[1]);
+        if (!role || role.id === message.guild.id) return message.reply("❌ منشن الرتبة أو اكتب ID صحيح.");
+        if (!role.editable) return message.reply("❌ لا أستطيع حذف هذه الرتبة بسبب ترتيب الرتب.");
+        const roleName = role.name;
+        const roleId = role.id;
+        await sendLog(message.guild, settings, new EmbedBuilder()
+          .setTitle("🗑️ حذف رتبة")
+          .setColor("#ED4245")
+          .addFields(
+            { name: "👤 المنفذ", value: `${message.author} (\`${message.author.id}\`)`, inline: false },
+            { name: "🏷️ الرتبة", value: `@${roleName} (\`${roleId}\`)`, inline: false },
+            { name: "🕐 الوقت", value: logTime(), inline: true }
+          ).setTimestamp());
+        await role.delete(`حذف رتبة بواسطة ${message.author.tag}`);
+        return message.reply(`✅ تم حذف الرتبة **${roleName}**.`);
+      }
 
       // ==================================================
       // MODERATION PREFIX COMMANDS
@@ -5045,8 +5286,6 @@ client.on(
         "رجع", "$رجع", "unban", "$unban",
         "$وقتي", "وقتي"
       ];
-
-      const firstWord = content.split(/\s+/)[0].toLowerCase();
 
       if (moderationAliases.includes(firstWord)) {
         if (
@@ -5169,7 +5408,10 @@ client.on(
 
         settings[`${level}Role`] = role.id;
         saveDB();
-        return message.reply(`✅ تم ربط رتبة ${level} بالـID \`${role.id}\`.`);
+        if (level === "junior" && role.editable && !role.mentionable) {
+          try { await role.setMentionable(true, "تفعيل منشن رتبة الاستاف الصغرى للتذاكر"); } catch {}
+        }
+        return message.reply(`✅ تم ربط رتبة ${level} بالـID \`${role.id}\`.\n📣 منشن رتبة الاستاف الصغرى في التذاكر: ${level === "junior" ? "مفعل" : "يتم منشن الرتبة عند فتح التذكرة"}.`);
       }
 
       if (firstWord === "$setup-ticket-category" || firstWord === "setup-ticket-category") {
