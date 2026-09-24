@@ -17,7 +17,6 @@ const {
 
 const fs = require("fs");
 const path = require("path");
-const sharp = require("sharp");
 
 // ==================================================
 // TOKEN
@@ -165,53 +164,76 @@ function formatZenix(amount) {
   return `${Number(amount || 0).toLocaleString("en-US")} ${ZENIX_NAME}`;
 }
 
-function zenixCaptchaSvg(code) {
-  const chars = String(code).split("");
-  const positions = [92, 145, 198, 251, 304, 357];
-  const rotations = [-8, 6, -4, 8, -6, 4];
+function createPng(width, height, rgba) {
+  const rows = [];
+  const stride = width * 4;
+  for (let y = 0; y < height; y++) {
+    rows.push(Buffer.concat([Buffer.from([0]), rgba.subarray(y * stride, (y + 1) * stride)]));
+  }
+  const raw = Buffer.concat(rows);
+  const crc32 = (buf) => {
+    let c = 0xffffffff;
+    for (const b of buf) {
+      c ^= b;
+      for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
+    }
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type, data) => {
+    const t = Buffer.from(type);
+    const body = Buffer.concat([t, data]);
+    const out = Buffer.alloc(12 + data.length);
+    out.writeUInt32BE(data.length, 0); body.copy(out, 4); out.writeUInt32BE(crc32(body), 8 + data.length);
+    return out;
+  };
+  const header = Buffer.from([137,80,78,71,13,10,26,10]);
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(width,0); ihdr.writeUInt32BE(height,4); ihdr[8]=8; ihdr[9]=6;
+  return Buffer.concat([header, chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw, { level: 6 })), chunk('IEND', Buffer.alloc(0))]);
+}
 
-  const text = chars.map((char, i) =>
-    `<text x="${positions[i]}" y="${145 + (i % 2 ? -5 : 6)}" transform="rotate(${rotations[i]} ${positions[i]} 145)" font-size="58" font-family="Arial, sans-serif" font-weight="900" fill="#ffffff">${char}</text>`
-  ).join("");
+const ZENIX_DIGITS = {
+  '0':['11111','10001','10001','10001','10001','10001','11111'],
+  '1':['00100','01100','00100','00100','00100','00100','01110'],
+  '2':['11111','00001','00001','11111','10000','10000','11111'],
+  '3':['11111','00001','00001','01111','00001','00001','11111'],
+  '4':['10001','10001','10001','11111','00001','00001','00001'],
+  '5':['11111','10000','10000','11111','00001','00001','11111'],
+  '6':['11111','10000','10000','11111','10001','10001','11111'],
+  '7':['11111','00001','00010','00100','01000','01000','01000'],
+  '8':['11111','10001','10001','11111','10001','10001','11111'],
+  '9':['11111','10001','10001','11111','00001','00001','11111']
+};
 
-  const lines = Array.from({ length: 7 }, (_, i) =>
-    `<line x1="${20 + i * 65}" y1="${35 + (i * 31) % 150}" x2="${390 - i * 27}" y2="${170 + (i * 19) % 80}" stroke="#ffffff" stroke-opacity=".28" stroke-width="3"/>`
-  ).join("");
-
-  const circles = Array.from({ length: 22 }, (_, i) =>
-    `<circle cx="${20 + (i * 67) % 390}" cy="${20 + (i * 43) % 190}" r="${2 + (i % 4)}" fill="#ffffff" fill-opacity=".22"/>`
-  ).join("");
-
-  return `
-<svg xmlns="http://www.w3.org/2000/svg" width="420" height="220" viewBox="0 0 420 220">
-  <defs>
-    <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
-      <stop offset="0%" stop-color="#5865F2"/>
-      <stop offset="50%" stop-color="#7c3aed"/>
-      <stop offset="100%" stop-color="#111827"/>
-    </linearGradient>
-    <filter id="shadow"><feDropShadow dx="0" dy="4" stdDeviation="5" flood-opacity=".35"/></filter>
-  </defs>
-  <rect width="420" height="220" rx="24" fill="url(#g)"/>
-  ${circles}
-  ${lines}
-  <rect x="28" y="28" width="364" height="164" rx="18" fill="#000000" fill-opacity=".16"/>
-  <text x="210" y="48" text-anchor="middle" fill="#ffffff" fill-opacity=".9" font-size="16" font-family="Arial, sans-serif" font-weight="700">ZENIX ⚡ SECURITY</text>
-  <g filter="url(#shadow)">${text}</g>
-  <text x="210" y="190" text-anchor="middle" fill="#ffffff" fill-opacity=".85" font-size="12" font-family="Arial, sans-serif">اكتب الأرقام كما تظهر لتأكيد التحويل</text>
-</svg>`;
+function zenixCaptchaPng(code) {
+  const width = 420, height = 220;
+  const rgba = Buffer.alloc(width * height * 4);
+  const set = (x,y,r,g,b,a=255) => {
+    if(x<0||y<0||x>=width||y>=height)return;
+    const i=(y*width+x)*4; rgba[i]=r; rgba[i+1]=g; rgba[i+2]=b; rgba[i+3]=a;
+  };
+  for(let y=0;y<height;y++) for(let x=0;x<width;x++) {
+    const t=(x/width+y/height)/2;
+    set(x,y,Math.round(40+70*t),Math.round(45+20*t),Math.round(130+80*t));
+  }
+  for(let y=28;y<192;y++) for(let x=28;x<392;x++) set(x,y,12,15,30,190);
+  for(let i=0;i<10;i++) {
+    const x=(i*47+19)%400, y=(i*71+17)%190;
+    for(let k=0;k<45;k++) { const xx=x+k, yy=(y+k*2)%190+15; set(xx,yy,255,255,255,70); }
+  }
+  const scale=14, glyphW=5*scale, gap=15, total=6*glyphW+5*gap, startX=Math.floor((width-total)/2), startY=72;
+  String(code).split('').forEach((ch,i)=>{
+    const glyph=ZENIX_DIGITS[ch]; const ox=startX+i*(glyphW+gap);
+    glyph.forEach((row,ry)=>row.split('').forEach((v,rx)=>{
+      if(v==='1') for(let yy=0;yy<scale;yy++) for(let xx=0;xx<scale;xx++) set(ox+rx*scale+xx,startY+ry*scale+yy,255,255,255,255);
+    }));
+  });
+  return createPng(width,height,rgba);
 }
 
 async function createZenixCaptcha() {
   const code = String(Math.floor(100000 + Math.random() * 900000));
-  const png = await sharp(Buffer.from(zenixCaptchaSvg(code), "utf8"))
-    .png()
-    .toBuffer();
-
-  return {
-    code,
-    attachment: new AttachmentBuilder(png, { name: "zenix-captcha.png" })
-  };
+  const png = zenixCaptchaPng(code);
+  return { code, attachment: new AttachmentBuilder(png, { name: 'zenix-captcha.png' }) };
 }
 
 function zenixHelpEmbed() {
